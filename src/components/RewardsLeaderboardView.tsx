@@ -89,10 +89,19 @@ export const RewardsLeaderboardView: React.FC = () => {
       .slice(0, limitCount);
   }, [entries, cityFilter, wardFilter, limitCount]);
 
+  const myCandidate = useMemo(
+    () => (firebaseUser ? candidates.find((c) => c.uid === firebaseUser.uid) : undefined),
+    [candidates, firebaseUser]
+  );
+
   const submitAwardNomination = async () => {
     setNominationMsg(null);
     if (!firebaseUser || !profile) {
       setNominationMsg('Please sign in first.');
+      return;
+    }
+    if (myCandidate) {
+      setNominationMsg(`Portfolio already submitted (Status: ${myCandidate.status}).`);
       return;
     }
     const id = `cand_${firebaseUser.uid}`;
@@ -341,11 +350,14 @@ export const RewardsLeaderboardView: React.FC = () => {
               <div className="pt-2 flex flex-wrap items-center gap-3">
                 <button
                   type="button"
+                  disabled={Boolean(myCandidate)}
                   onClick={submitAwardNomination}
-                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-green-900 text-white text-xs font-medium rounded-lg hover:bg-green-800"
+                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-green-900 text-white text-xs font-medium rounded-lg hover:bg-green-800 disabled:opacity-60"
                 >
                   <ShieldCheck className="w-4 h-4" />
-                  Submit Verified Portfolio for Annual Shortlist
+                  {myCandidate
+                    ? `Portfolio Submitted (${myCandidate.status})`
+                    : 'Submit Verified Portfolio for Annual Shortlist'}
                 </button>
                 <span className="text-xs text-slate-600">
                   {candidates.length} shortlisted / nominated portfolio(s) in registry

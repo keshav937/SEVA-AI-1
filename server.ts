@@ -4,13 +4,15 @@ import express from 'express';
 import http from 'http';
 import multer from 'multer';
 import path from 'path';
-import { createServer as createViteServer } from 'vite';
 import { WebSocket, WebSocketServer } from 'ws';
 import {
   analyzeCivicReport,
   CIVIC_CATEGORIES,
   DEPARTMENT_BY_CATEGORY,
+  isGeminiConfigured,
   processSaathiConversation,
+  synthesizeWithGemini,
+  transcribeWithGemini,
 } from './server/ai.ts';
 import {
   isElevenLabsConfigured,
@@ -127,8 +129,16 @@ async function startServer() {
   // =========================================================================
   app.get('/api/voice/capabilities', async (_req, res) => {
     const voiceData = await listElevenLabsVoices();
+    const geminiOk = isGeminiConfigured();
+    const activeVoiceProvider = voiceData.configured
+      ? 'elevenlabs'
+      : geminiOk
+      ? 'gemini'
+      : 'browser';
     res.json({
       elevenlabsConfigured: voiceData.configured,
+      geminiVoiceFallback: geminiOk,
+      activeVoiceProvider,
       voices: voiceData.voices,
       voiceLookupError: voiceData.error || null,
       languages: Object.values(VOICE_LANGUAGE_CAPABILITIES),
@@ -151,28 +161,49 @@ async function startServer() {
       return res.status(400).json({ error: 'Text is required for speech synthesis.' });
     }
 
-    try {
-      const audioBuffer = await synthesizeWithElevenLabs({ text, voiceId, language });
-      res.setHeader('Content-Type', 'audio/mpeg');
-      res.setHeader('Content-Length', audioBuffer.length);
-      res.setHeader('Cache-Control', 'no-store');
-      return res.send(audioBuffer);
-    } catch (err: any) {
-      const code = err?.code || 'ELEVENLABS_TTS_FAILED';
-      const status =
-        code === 'ELEVENLABS_KEY_MISSING'
-          ? 503
-          : code === 'UNSUPPORTED_TTS_LANGUAGE'
-          ? 422
-          : err?.status === 401
-          ? 502
-          : 502;
-      return res.status(status).json({
-        error: err?.message || 'ElevenLabs TTS failed.',
-        code,
-        fallbackAvailable: true,
-      });
+    if (isElevenLabsConfigured() && language !== 'bn' && language !== 'as') {
+      try {
+        const audioBuffer = await synthesizeWithElevenLabs({ text, voiceId, language });
+        res.setHeader('Content-Type', 'audio/mpeg');
+        res.setHeader('Content-Length', audioBuffer.length);
+        res.setHeader('X-Voice-Provider', 'elevenlabs');
+        res.setHeader('Cache-Control', 'no-store');
+        return res.send(audioBuffer);
+      } catch (err: any) {
+        if (!isGeminiConfigured()) {
+          const code = err?.code || 'ELEVENLABS_TTS_FAILED';
+          return res.status(err?.status === 401 ? 502 : 502).json({
+            error: err?.message || 'ElevenLabs TTS failed.',
+            code,
+            fallbackAvailable: true,
+          });
+        }
+        // Fall through to Gemini Speech Engine when ElevenLabs rejects or quota-limits
+      }
     }
+
+    if (isGeminiConfigured()) {
+      try {
+        const wavBuffer = await synthesizeWithGemini({ text, voiceId, language });
+        res.setHeader('Content-Type', 'audio/wav');
+        res.setHeader('Content-Length', wavBuffer.length);
+        res.setHeader('X-Voice-Provider', 'gemini');
+        res.setHeader('Cache-Control', 'no-store');
+        return res.send(wavBuffer);
+      } catch (err: any) {
+        return res.status(502).json({
+          error: err?.message || 'Speech synthesis unavailable right now.',
+          code: 'GEMINI_TTS_FAILED',
+          fallbackAvailable: true,
+        });
+      }
+    }
+
+    return res.status(503).json({
+      error: 'No server speech synthesis key is configured. Add ELEVENLABS_API_KEY or GEMINI_API_KEY in Settings > Secrets.',
+      code: 'VOICE_ENGINE_UNCONFIGURED',
+      fallbackAvailable: true,
+    });
   });
 
   app.post('/api/voice/stt', upload.single('audio'), async (req, res) => {
@@ -188,36 +219,74 @@ async function startServer() {
 
     const language = (req.body?.language as SupportedVoiceLanguage | 'auto') || 'auto';
 
-    try {
-      const result = await transcribeWithElevenLabs({
-        audioBuffer: file.buffer,
-        mimeType: file.mimetype || 'audio/webm',
-        filename: file.originalname || 'recording.webm',
-        language,
-      });
+    if (isElevenLabsConfigured()) {
+      try {
+        const result = await transcribeWithElevenLabs({
+          audioBuffer: file.buffer,
+          mimeType: file.mimetype || 'audio/webm',
+          filename: file.originalname || 'recording.webm',
+          language,
+        });
 
-      if (!result.text) {
-        return res.status(422).json({
-          error: 'No clear speech was detected in the recording. Please try speaking closer to the microphone.',
-          code: 'EMPTY_TRANSCRIPTION',
+        if (!result.text) {
+          return res.status(422).json({
+            error: 'No clear speech was detected in the recording. Please try speaking closer to the microphone.',
+            code: 'EMPTY_TRANSCRIPTION',
+          });
+        }
+
+        return res.json({
+          provider: 'elevenlabs_scribe_v1',
+          text: result.text,
+          languageCode: result.languageCode,
+          languageProbability: result.languageProbability,
+        });
+      } catch (err: any) {
+        if (!isGeminiConfigured()) {
+          return res.status(502).json({
+            error: err?.message || 'ElevenLabs speech recognition failed.',
+            code: err?.code || 'ELEVENLABS_STT_FAILED',
+            fallbackAvailable: true,
+          });
+        }
+        // Fall through to Gemini Transcribe fallback
+      }
+    }
+
+    if (isGeminiConfigured()) {
+      try {
+        const gemResult = await transcribeWithGemini({
+          audioBuffer: file.buffer,
+          mimeType: file.mimetype || 'audio/webm',
+          language,
+        });
+
+        if (!gemResult.text) {
+          return res.status(422).json({
+            error: 'No clear speech was detected in the recording. Please try speaking closer to the microphone.',
+            code: 'EMPTY_TRANSCRIPTION',
+          });
+        }
+
+        return res.json({
+          provider: 'gemini_3_5_transcribe',
+          text: gemResult.text,
+          languageCode: gemResult.languageCode,
+        });
+      } catch (err: any) {
+        return res.status(502).json({
+          error: err?.message || 'Speech recognition failed. You can edit or type your message below.',
+          code: 'GEMINI_STT_FAILED',
+          fallbackAvailable: true,
         });
       }
-
-      return res.json({
-        provider: 'elevenlabs_scribe_v1',
-        text: result.text,
-        languageCode: result.languageCode,
-        languageProbability: result.languageProbability,
-      });
-    } catch (err: any) {
-      const code = err?.code || 'ELEVENLABS_STT_FAILED';
-      const status = code === 'ELEVENLABS_KEY_MISSING' ? 503 : 502;
-      return res.status(status).json({
-        error: err?.message || 'ElevenLabs speech recognition failed.',
-        code,
-        fallbackAvailable: true,
-      });
     }
+
+    return res.status(503).json({
+      error: 'No speech transcription service key is configured on the server.',
+      code: 'VOICE_ENGINE_UNCONFIGURED',
+      fallbackAvailable: true,
+    });
   });
 
   app.post('/api/voice/assistant', async (req, res) => {
@@ -590,16 +659,15 @@ async function startServer() {
       return res.status(400).json({ error: 'Invalid SOS payload.' });
     }
     const saved = upsertOperationalSos(sos);
-    if (saved.status === 'active') {
-      broadcast('authority:all', 'sos:alert', {
-        id: saved.id,
-        displayName: saved.displayName,
-        address: saved.address,
-        lat: saved.lat,
-        lng: saved.lng,
-        triggerMethod: saved.triggerMethod,
-      });
-    }
+    broadcast('authority:all', saved.status === 'active' ? 'sos:alert' : 'sos:updated', {
+      id: saved.id,
+      status: saved.status,
+      displayName: saved.displayName,
+      address: saved.address,
+      lat: saved.lat,
+      lng: saved.lng,
+      triggerMethod: saved.triggerMethod,
+    });
     return res.json({ synced: true, sos: saved });
   });
 
@@ -747,8 +815,13 @@ async function startServer() {
     res.json({ categories: CIVIC_CATEGORIES, departmentByCategory: DEPARTMENT_BY_CATEGORY });
   });
 
+  app.all('/api/*', (_req, res) => {
+    res.status(404).json({ error: 'API endpoint not found.' });
+  });
+
   // Vite Dev Middleware vs Static Production Build
   if (!isProduction) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',

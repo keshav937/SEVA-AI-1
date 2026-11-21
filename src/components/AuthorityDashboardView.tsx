@@ -10,10 +10,39 @@ import {
   ShieldCheck,
   Volume2,
 } from 'lucide-react';
-import { doc, increment, serverTimestamp, updateDoc } from 'firebase/firestore';
+import { doc, getDoc, increment, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../lib/firebase';
 import { CivicReport, ReportStatus } from '../types/seva';
+
+function computeTierFromCount(verifiedCount: number): string {
+  if (verifiedCount >= 50) return 'Platinum Guardian';
+  if (verifiedCount >= 25) return 'Gold Citizen';
+  if (verifiedCount >= 10) return 'Silver Citizen';
+  if (verifiedCount >= 1) return 'Bronze Citizen';
+  return 'New Citizen';
+}
+
+function categoryBadgeFor(category: string): string | null {
+  switch (category) {
+    case 'Waste Management':
+    case 'Blocked Drains and Waterlogging':
+      return 'Clean City Champion';
+    case 'Roads and Potholes':
+    case 'Traffic and Road Obstructions':
+      return 'Road Safety Guardian';
+    case 'Medical Assistance':
+      return 'Public Health Protector';
+    case 'Animal Rescue and Welfare':
+      return 'Animal Welfare Champion';
+    case 'Women and Child Safety':
+      return 'Safety Hero';
+    case 'Road Accident Reporting':
+      return 'Emergency Response Contributor';
+    default:
+      return null;
+  }
+}
 
 const DEPARTMENTS = [
   'All Departments',
@@ -57,6 +86,7 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({ 
   const [actionNote, setActionNote] = useState('');
   const [nextStatus, setNextStatus] = useState<ReportStatus>('Authority Acknowledged');
   const [updating, setUpdating] = useState(false);
+  const [actionFeedback, setActionFeedback] = useState<string | null>(null);
 
   useEffect(() => {
     fetch('/api/auth/authority-config')
@@ -140,6 +170,7 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({ 
   const handleManageReport = async (fraudDecision?: 'cleared' | 'rejected' | 'investigation_queue') => {
     if (!selectedReport || !authoritySession) return;
     setUpdating(true);
+    setActionFeedback(null);
     try {
       const res = await fetch(`/api/authority/reports/${encodeURIComponent(selectedReport.id)}/manage`, {
         method: 'POST',
@@ -157,39 +188,79 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({ 
       });
 
       const data = await res.json();
-      if (res.ok && data.report) {
-        setSelectedReport(data.report);
-        setActionNote('');
-        await fetchAuthorityData();
+      if (!res.ok || !data.report) {
+        setActionFeedback(data.error || 'Unable to update report.');
+        return;
+      }
 
-        // Sync back to Firestore if bootstrapped admin is signed in (updates citizen real-time view & verified points!)
-        try {
-          await updateDoc(doc(db, 'reports', selectedReport.id), {
-            status: data.report.status,
-            fraudQueueStatus: data.report.fraudQueueStatus,
-            assignedOfficer: data.report.assignedOfficer || '',
-            actionNotes: data.report.actionNotes || '',
-            resolutionNotes: data.report.resolutionNotes || '',
+      setSelectedReport(data.report);
+      setActionNote('');
+      await fetchAuthorityData();
+      setActionFeedback(
+        `Saved ${data.report.complaintId} (${data.report.status}) and notified citizen in real time.`
+      );
+
+      // Sync back to Firestore if bootstrapped admin is signed in (updates citizen real-time view, timeline & verified rewards)
+      try {
+        await updateDoc(doc(db, 'reports', selectedReport.id), {
+          status: data.report.status,
+          fraudQueueStatus: data.report.fraudQueueStatus,
+          assignedOfficer: data.report.assignedOfficer || '',
+          actionNotes: data.report.actionNotes || '',
+          resolutionNotes: data.report.resolutionNotes || '',
+          updatedAt: serverTimestamp(),
+        });
+
+        const histId = `hist_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        await setDoc(doc(db, 'reportStatusHistory', histId), {
+          reportId: selectedReport.id,
+          reporterUid: selectedReport.reporterUid,
+          step: (fraudDecision ? `fraud_${fraudDecision}` : data.report.status)
+            .toLowerCase()
+            .replace(/\s+/g, '_')
+            .slice(0, 60),
+          label: (fraudDecision ? `Trust Review: ${fraudDecision}` : data.report.status).slice(0, 120),
+          actorRole: authoritySession.department.slice(0, 40),
+          note: (actionNote || data.report.resolutionNotes || 'Authority status update').slice(0, 500),
+          createdAt: serverTimestamp(),
+        });
+
+        if (nextStatus === 'Resolved' && !fraudDecision && data.report.fraudQueueStatus !== 'rejected') {
+          const userSnap = await getDoc(doc(db, 'users', selectedReport.reporterUid));
+          const userData = userSnap.exists() ? userSnap.data() : null;
+          const nextVerified = Number(userData?.verifiedReportsCount || 0) + 1;
+          const nextTier = computeTierFromCount(nextVerified);
+          const existingBadges: string[] = Array.isArray(userData?.badges) ? userData.badges : [];
+          const nextBadges = Array.from(
+            new Set(
+              [
+                ...existingBadges,
+                'First Report',
+                categoryBadgeFor(selectedReport.category),
+                nextVerified >= 5 ? 'Consistent Citizen' : null,
+              ].filter(Boolean) as string[]
+            )
+          ).slice(0, 20);
+
+          await updateDoc(doc(db, 'users', selectedReport.reporterUid), {
+            points: increment(50),
+            verifiedReportsCount: increment(1),
+            resolvedReportsCount: increment(1),
+            badgeTier: nextTier,
+            badges: nextBadges,
             updatedAt: serverTimestamp(),
           });
-
-          if (nextStatus === 'Resolved' && !fraudDecision && data.report.fraudQueueStatus !== 'rejected') {
-            await updateDoc(doc(db, 'users', selectedReport.reporterUid), {
-              points: increment(50),
-              verifiedReportsCount: increment(1),
-              resolvedReportsCount: increment(1),
-              updatedAt: serverTimestamp(),
-            });
-            await updateDoc(doc(db, 'leaderboard', selectedReport.reporterUid), {
-              points: increment(50),
-              verifiedReportsCount: increment(1),
-              resolvedReportsCount: increment(1),
-              updatedAt: serverTimestamp(),
-            });
-          }
-        } catch {
-          // Non-bootstrapped department officers update via operational server ledger + WebSocket
+          await updateDoc(doc(db, 'leaderboard', selectedReport.reporterUid), {
+            points: increment(50),
+            verifiedReportsCount: increment(1),
+            resolvedReportsCount: increment(1),
+            badgeTier: nextTier,
+            badges: nextBadges,
+            updatedAt: serverTimestamp(),
+          });
         }
+      } catch {
+        // Non-bootstrapped department officers synchronize via server ledger + WebSocket
       }
     } finally {
       setUpdating(false);
@@ -595,6 +666,12 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({ 
                   >
                     {updating ? 'Saving...' : 'Save Status & Notify Citizen'}
                   </button>
+
+                  {actionFeedback && (
+                    <div className="text-xs text-green-950 bg-emerald-50 border border-emerald-200 rounded-lg p-2.5">
+                      {actionFeedback}
+                    </div>
+                  )}
 
                   {queueTab === 'fraud_review' && (
                     <div className="grid grid-cols-2 gap-2 pt-2">

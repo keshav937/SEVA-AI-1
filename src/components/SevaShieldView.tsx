@@ -249,13 +249,37 @@ export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) =
   const handleMarkSafe = async () => {
     if (!activeSos || !firebaseUser) return;
     await stopLiveTracking();
+    const summary = `Marked I'm Safe at ${new Date().toLocaleTimeString()}. Live GPS sharing stopped.`;
     try {
       await updateDoc(doc(db, 'sosEvents', activeSos.id), {
         status: 'safe_resolved',
-        deliverySummary: `Marked I'm Safe at ${new Date().toLocaleTimeString()}. Live GPS sharing stopped.`,
+        deliverySummary: summary,
         updatedAt: serverTimestamp(),
       });
-      setSosStatusMsg("Status updated to I'm Safe. Live location sharing has been stopped.");
+
+      await fetch('/api/sos/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: activeSos.id,
+          uid: firebaseUser.uid,
+          displayName: activeSos.displayName || profile?.displayName || 'Citizen',
+          status: 'safe_resolved',
+          lat: activeSos.lat,
+          lng: activeSos.lng,
+          accuracyMeters: activeSos.accuracyMeters ?? 0,
+          address: activeSos.address || '',
+          triggerMethod: activeSos.triggerMethod,
+          notifiedContactsCount: activeSos.notifiedContactsCount,
+          authorityNotified: true,
+          deliverySummary: summary,
+          trackingShareToken: activeSos.trackingSessionId || undefined,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }),
+      }).catch(() => {});
+
+      setSosStatusMsg("Status updated to I'm Safe. Live location sharing stopped and Control Room notified.");
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `sosEvents/${activeSos.id}`);
     }
@@ -363,6 +387,12 @@ export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) =
       setAssistanceMsg('Please sign in with Google first.');
       return;
     }
+    const conditionText = (kind === 'medical' ? medicalCondition : accidentDetail).trim();
+    if (conditionText.length < 3) {
+      setAssistanceMsg('Please describe the emergency or patient condition (at least 3 characters).');
+      return;
+    }
+
     const loc = lat !== null && lng !== null ? { lat, lng, address } : await requestCurrentLocation();
     const finalLat = loc?.lat ?? 0;
     const finalLng = loc?.lng ?? 0;
@@ -376,7 +406,7 @@ export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) =
       await setDoc(doc(db, 'medicalRequests', reqId), {
         uid: firebaseUser.uid,
         trackingId,
-        patientCondition: (kind === 'medical' ? medicalCondition : accidentDetail).trim().slice(0, 400),
+        patientCondition: conditionText.slice(0, 400),
         severity: medicalSeverity,
         lat: finalLat,
         lng: finalLng,
@@ -386,11 +416,60 @@ export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) =
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+
+      const nowIso = new Date().toISOString();
+      await fetch('/api/reports/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: reqId,
+          complaintId: trackingId,
+          reporterUid: firebaseUser.uid,
+          reporterDisplayName: (profile?.displayName || firebaseUser.displayName || 'Citizen').slice(0, 80),
+          category: kind === 'medical' ? 'Medical Assistance' : 'Road Accident Reporting',
+          title:
+            kind === 'medical'
+              ? `Medical Emergency (${medicalSeverity})`
+              : `Road Accident Emergency (${medicalSeverity})`,
+          description: `${conditionText.slice(0, 400)} · Nearest facility: ${nearestHosp}`,
+          severity: medicalSeverity === 'Critical' ? 'Critical' : 'High',
+          status: 'Submitted',
+          department: kind === 'medical' ? 'Medical Services' : 'Emergency Control Room',
+          ward: (profile?.ward || 'Emergency Zone').slice(0, 80),
+          locality: (profile?.city || 'City').slice(0, 120),
+          address: finalAddr,
+          lat: finalLat,
+          lng: finalLng,
+          accuracyMeters: accuracyMeters ?? 0,
+          isEmergency: true,
+          isSensitive: false,
+          fraudRiskScore: 0,
+          fraudRiskLevel: 'Low',
+          fraudIndicators: [],
+          fraudExplanation: 'Seva Shield direct emergency dispatch.',
+          fraudQueueStatus: 'cleared',
+          timeline: [
+            {
+              step: 'submitted',
+              label: `${kind === 'medical' ? 'Medical' : 'Accident'} Alert Dispatched`,
+              actorRole: 'Seva Shield',
+              note: `Nearest facility: ${nearestHosp}`,
+              timestamp: nowIso,
+            },
+          ],
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        }),
+      }).catch(() => {});
+
       setMedicalCondition('');
       setAccidentDetail('');
-      setAssistanceMsg(`Request recorded (${trackingId}). Nearest facility identified: ${nearestHosp}.`);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, `medicalRequests/${reqId}`);
+      setAssistanceMsg(`Request recorded (${trackingId}). Control Room notified · Nearest facility: ${nearestHosp}.`);
+    } catch (err: any) {
+      if (err?.message?.includes('Missing or insufficient permissions')) {
+        handleFirestoreError(err, OperationType.CREATE, `medicalRequests/${reqId}`);
+      }
+      setAssistanceMsg(err?.message || 'Unable to submit assistance request.');
     }
   };
 

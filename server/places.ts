@@ -153,16 +153,45 @@ interface CacheEntry {
 const nearbyCache = new Map<string, CacheEntry>();
 const reverseCache = new Map<string, { expiresAt: number; address: string; city?: string; ward?: string }>();
 
-const NOMINATIM_TERMS_BY_CATEGORY: Record<NearbyCategoryKey, string[]> = {
-  healthcare: ['hospital', 'pharmacy', 'clinic'],
-  public_safety: ['police', 'fire station'],
-  education: ['school', 'college', 'library'],
-  food: ['restaurant', 'cafe'],
-  public_places: ['park', 'community centre'],
-  transport: ['metro station', 'bus station', 'railway station'],
-  shopping: ['market', 'supermarket', 'mall'],
-  government: ['government office', 'post office', 'town hall'],
-  other: ['bank', 'atm', 'fuel'],
+const NOMINATIM_TERMS_BY_CATEGORY: Record<NearbyCategoryKey, Array<{ query: string; subcategory: string }>> = {
+  healthcare: [
+    { query: '[amenity=hospital]', subcategory: 'hospital' },
+    { query: '[amenity=clinic]', subcategory: 'clinic' },
+    { query: '[amenity=pharmacy]', subcategory: 'pharmacy' },
+  ],
+  public_safety: [
+    { query: '[amenity=police]', subcategory: 'police' },
+    { query: '[amenity=fire_station]', subcategory: 'fire station' },
+  ],
+  education: [
+    { query: '[amenity=school]', subcategory: 'school' },
+    { query: '[amenity=college]', subcategory: 'college' },
+    { query: '[amenity=library]', subcategory: 'library' },
+  ],
+  food: [
+    { query: '[amenity=restaurant]', subcategory: 'restaurant' },
+    { query: '[amenity=cafe]', subcategory: 'cafe' },
+  ],
+  public_places: [
+    { query: '[leisure=park]', subcategory: 'park' },
+    { query: '[amenity=community_centre]', subcategory: 'community centre' },
+  ],
+  transport: [
+    { query: '[railway=station]', subcategory: 'station' },
+    { query: '[amenity=bus_station]', subcategory: 'bus station' },
+  ],
+  shopping: [
+    { query: '[shop=supermarket]', subcategory: 'supermarket' },
+    { query: '[shop=mall]', subcategory: 'mall' },
+  ],
+  government: [
+    { query: '[amenity=townhall]', subcategory: 'town hall' },
+    { query: '[amenity=post_office]', subcategory: 'post office' },
+  ],
+  other: [
+    { query: '[amenity=bank]', subcategory: 'bank' },
+    { query: '[amenity=fuel]', subcategory: 'fuel station' },
+  ],
 };
 
 async function fetchViaNominatim(params: {
@@ -180,18 +209,18 @@ async function fetchViaNominatim(params: {
     params.lng + lngDelta
   ).toFixed(5)},${(params.lat - latDelta).toFixed(5)}`;
 
-  const tasks: Array<{ cat: NearbyCategoryKey; term: string }> = [];
+  const tasks: Array<{ cat: NearbyCategoryKey; query: string; subcategory: string }> = [];
   for (const cat of params.cats.slice(0, 4)) {
-    const terms = NOMINATIM_TERMS_BY_CATEGORY[cat] || ['civic'];
-    for (const term of terms.slice(0, params.cats.length > 1 ? 1 : 2)) {
-      tasks.push({ cat, term });
+    const terms = NOMINATIM_TERMS_BY_CATEGORY[cat] || [{ query: '[amenity=community_centre]', subcategory: 'civic' }];
+    for (const item of terms.slice(0, params.cats.length > 1 ? 1 : 2)) {
+      tasks.push({ cat, query: item.query, subcategory: item.subcategory });
     }
   }
 
-  for (const { cat, term } of tasks) {
+  for (const { cat, query, subcategory } of tasks) {
     try {
       const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(
-        term
+        query
       )}&viewbox=${viewbox}&bounded=1&limit=15&addressdetails=1`;
       const res = await fetch(url, {
         headers: {
@@ -215,7 +244,7 @@ async function fetchViaNominatim(params: {
       }>;
 
       for (const item of items) {
-        if (item.category === 'highway' && term !== 'bus station') continue;
+        if (item.category === 'highway' && subcategory !== 'bus station') continue;
         if (item.category === 'office' && cat !== 'government') continue;
         const pLat = Number(item.lat);
         const pLng = Number(item.lon);
@@ -224,7 +253,10 @@ async function fetchViaNominatim(params: {
         const distanceMeters = Math.round(haversineMeters(params.lat, params.lng, pLat, pLng));
         if (distanceMeters > params.radius + 500) continue;
 
-        const name = (item.name || item.display_name?.split(',')[0] || term).trim();
+        const niceSub = (item.type || subcategory).replace(/_/g, ' ');
+        const fallbackLabel = niceSub.charAt(0).toUpperCase() + niceSub.slice(1);
+        const rawFirstPart = item.display_name?.split(',')[0]?.trim();
+        const name = (item.name || rawFirstPart || fallbackLabel).trim();
         const dedupKey = `${name.toLowerCase()}:${pLat.toFixed(4)}:${pLng.toFixed(4)}`;
         if (seen.has(dedupKey)) continue;
         seen.add(dedupKey);
@@ -233,7 +265,7 @@ async function fetchViaNominatim(params: {
           id: `nom-${item.osm_type || 'N'}-${item.osm_id || item.place_id || places.length}`,
           name,
           category: cat,
-          subcategory: (item.type || term).replace(/_/g, ' '),
+          subcategory: niceSub,
           address: item.display_name || 'OpenStreetMap verified location',
           lat: pLat,
           lng: pLng,

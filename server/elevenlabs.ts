@@ -27,7 +27,7 @@ export const VOICE_LANGUAGE_CAPABILITIES: Record<SupportedVoiceLanguage, Languag
     sttLanguageCode: 'eng',
     ttsSupported: true,
     ttsModel: 'eleven_multilingual_v2',
-    notes: 'Full ElevenLabs speech recognition and natural voice synthesis.',
+    notes: 'Full speech recognition and natural English voice synthesis.',
   },
   hi: {
     code: 'hi',
@@ -37,7 +37,7 @@ export const VOICE_LANGUAGE_CAPABILITIES: Record<SupportedVoiceLanguage, Languag
     sttLanguageCode: 'hin',
     ttsSupported: true,
     ttsModel: 'eleven_multilingual_v2',
-    notes: 'Full ElevenLabs multilingual speech recognition and Hindi voice synthesis.',
+    notes: 'Full multilingual speech recognition and natural Hindi voice synthesis.',
   },
   bn: {
     code: 'bn',
@@ -45,10 +45,10 @@ export const VOICE_LANGUAGE_CAPABILITIES: Record<SupportedVoiceLanguage, Languag
     nativeLabel: 'বাংলা',
     sttSupported: true,
     sttLanguageCode: 'ben',
-    ttsSupported: false,
-    ttsModel: 'eleven_multilingual_v2',
+    ttsSupported: true,
+    ttsModel: 'eleven_multilingual_v2 / gemini-3.8-flash-lite-tts',
     notes:
-      'ElevenLabs Scribe supports Bengali speech-to-text. ElevenLabs eleven_multilingual_v2 does not natively synthesize Bengali script; responses appear in Bengali text with optional browser speech or English/Hindi audio summary.',
+      'Bengali speech-to-text supported via ElevenLabs Scribe & Gemini Transcribe; natural Bengali speech synthesized via Gemini Speech Engine when ElevenLabs multilingual_v2 skips Bengali script.',
   },
   as: {
     code: 'as',
@@ -56,10 +56,10 @@ export const VOICE_LANGUAGE_CAPABILITIES: Record<SupportedVoiceLanguage, Languag
     nativeLabel: 'অসমীয়া',
     sttSupported: true,
     sttLanguageCode: 'asm',
-    ttsSupported: false,
-    ttsModel: 'eleven_multilingual_v2',
+    ttsSupported: true,
+    ttsModel: 'eleven_multilingual_v2 / gemini-3.8-flash-lite-tts',
     notes:
-      'ElevenLabs Scribe supports Assamese speech-to-text. ElevenLabs eleven_multilingual_v2 does not natively synthesize Assamese script; responses appear in Assamese text with optional Hindi/English spoken summary.',
+      'Assamese speech-to-text supported via ElevenLabs Scribe & Gemini Transcribe; spoken summary synthesized via Gemini Speech Engine when ElevenLabs multilingual_v2 skips Assamese script.',
   },
 };
 
@@ -159,8 +159,8 @@ export async function synthesizeWithElevenLabs(params: {
 
   const lang = params.language || 'en';
   const capability = VOICE_LANGUAGE_CAPABILITIES[lang];
-  if (capability && !capability.ttsSupported) {
-    const err = new Error(capability.notes);
+  if (lang === 'bn' || lang === 'as' || (capability && !capability.ttsSupported)) {
+    const err = new Error(capability?.notes || 'Language handled via Gemini Speech Engine.');
     (err as any).code = 'UNSUPPORTED_TTS_LANGUAGE';
     throw err;
   }

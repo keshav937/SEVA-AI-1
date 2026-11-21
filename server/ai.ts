@@ -1,12 +1,18 @@
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
-function getAiClient(): GoogleGenAI {
+export function isGeminiConfigured(): boolean {
+  const apiKey = process.env.GEMINI_API_KEY;
+  return Boolean(apiKey && apiKey.trim().length > 8 && apiKey !== 'MY_GEMINI_API_KEY');
+}
+
+function getAiClient(apiVersion?: string): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
     throw new Error('GEMINI_API_KEY is not configured on the server.');
   }
   return new GoogleGenAI({
     apiKey,
+    ...(apiVersion ? { apiVersion } : {}),
     httpOptions: {
       headers: {
         'User-Agent': 'aistudio-build',
@@ -15,19 +21,38 @@ function getAiClient(): GoogleGenAI {
   });
 }
 
-const AI_MODEL_CHAIN = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'] as const;
+const AI_MODEL_CHAIN = ['gemini-3.1-flash-lite', 'gemini-4-hydrogen', 'gemini-3.1-flash-lite'] as const;
+
+function parseJsonResponse<T>(text: string | undefined, fallback: T): T {
+  const cleaned = (text || '')
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  if (!cleaned) return fallback;
+  return JSON.parse(cleaned) as T;
+}
 
 async function generateWithFallback(
   ai: GoogleGenAI,
   requestFactory: (model: string) => Parameters<GoogleGenAI['models']['generateContent']>[0]
 ) {
   let lastError: unknown;
-  for (const model of AI_MODEL_CHAIN) {
+  for (let i = 0; i < AI_MODEL_CHAIN.length; i++) {
+    const model = AI_MODEL_CHAIN[i];
     try {
+      const req = requestFactory(model);
+      if (model === 'gemini-4-hydrogen') {
+        req.config = {
+          ...(req.config || {}),
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        };
+      }
+      const timeoutMs = model === 'gemini-3.1-flash-lite' ? 15000 : 18000;
       const response = await Promise.race([
-        ai.models.generateContent(requestFactory(model)),
+        ai.models.generateContent(req),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`AI_TIMEOUT:${model}`)), 15000)
+          setTimeout(() => reject(new Error(`AI_TIMEOUT:${model}`)), timeoutMs)
         ),
       ]);
       return response;
@@ -44,6 +69,9 @@ async function generateWithFallback(
         msg.includes('429') ||
         msg.includes('AI_TIMEOUT');
       if (!isTransient) throw err;
+      if (i < AI_MODEL_CHAIN.length - 1) {
+        await new Promise((r) => setTimeout(r, 400));
+      }
     }
   }
   throw lastError;
@@ -208,7 +236,7 @@ Tasks:
     },
   }));
 
-  const parsed = JSON.parse((response.text ?? '{}').trim()) as ReportAnalysisResult;
+  const parsed = parseJsonResponse<ReportAnalysisResult>(response.text, {} as ReportAnalysisResult);
   const clampedScore = Math.max(0, Math.min(100, Math.round(parsed.fraudRiskScore ?? 10)));
   const validCat = CIVIC_CATEGORIES.includes(parsed.suggestedCategory as any)
     ? parsed.suggestedCategory
@@ -350,7 +378,7 @@ Output JSON schema notes:
     },
   }));
 
-  const raw = JSON.parse((response.text ?? '{}').trim()) as {
+  const raw = parseJsonResponse<{
     replyText: string;
     detectedLanguage: string;
     intent: SaathiAssistantResponse['intent'];
@@ -362,7 +390,11 @@ Output JSON schema notes:
     extractedMissingFields?: string[];
     navigationTarget?: SaathiAssistantResponse['navigationTarget'];
     shouldTriggerSosFlow?: boolean;
-  };
+  }>(response.text, {
+    replyText: 'How can SEVA SAATHI assist you today?',
+    detectedLanguage: params.language,
+    intent: 'general',
+  });
 
   const result: SaathiAssistantResponse = {
     replyText: raw.replyText || 'How can SEVA SAATHI assist you today?',
@@ -388,3 +420,140 @@ Output JSON schema notes:
 
   return result;
 }
+
+const ELEVENLABS_TO_GEMINI_VOICE: Record<string, string> = {
+  '21m00Tcm4TlvDq8ikWAM': 'Kore',
+  EXAVITQu4vr4xnSDxMaL: 'Zephyr',
+  pNInz6obpgDQGcFmaJgB: 'Charon',
+  IKne3meq5aSn9XLyUdCD: 'Puck',
+};
+
+export async function synthesizeWithGemini(params: {
+  text: string;
+  voiceId?: string;
+  language?: 'en' | 'hi' | 'bn' | 'as';
+}): Promise<Buffer> {
+  const ai = getAiClient('v1beta');
+  const cleanText = params.text.trim().slice(0, 1800);
+  if (!cleanText) {
+    throw new Error('Text for speech synthesis cannot be empty.');
+  }
+
+  const prebuiltVoice = (params.voiceId && ELEVENLABS_TO_GEMINI_VOICE[params.voiceId]) || 'Kore';
+
+  const response = await Promise.race([
+    ai.models.generateContent({
+      model: 'gemini-3.8-flash-lite-tts',
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              text: cleanText,
+            },
+          ],
+        },
+      ],
+      config: {
+        responseModalities: ['AUDIO'],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: prebuiltVoice },
+          },
+        },
+      },
+    }),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Gemini TTS request timed out.')), 22000)
+    ),
+  ]);
+
+  const parts = response.candidates?.[0]?.content?.parts || [];
+  const audioPart = parts.find((p: any) => p?.inlineData?.data);
+  const base64Audio = audioPart?.inlineData?.data;
+  if (!base64Audio) {
+    throw new Error('Gemini TTS returned no audio data.');
+  }
+
+  return Buffer.from(base64Audio, 'base64');
+}
+
+export async function transcribeWithGemini(params: {
+  audioBuffer: Buffer;
+  mimeType: string;
+  language?: 'en' | 'hi' | 'bn' | 'as' | 'auto';
+}): Promise<{ text: string; languageCode: string }> {
+  const aiBeta = getAiClient('v1beta');
+  const aiDefault = getAiClient();
+  const langHint =
+    params.language === 'hi'
+      ? 'Hindi'
+      : params.language === 'bn'
+      ? 'Bengali'
+      : params.language === 'as'
+      ? 'Assamese'
+      : params.language === 'en'
+      ? 'English'
+      : 'the spoken language (English, Hindi, Bengali, or Assamese)';
+
+  const base64Audio = params.audioBuffer.toString('base64');
+  const mime = (params.mimeType || 'audio/webm').split(';')[0].trim() || 'audio/webm';
+
+  const contents = {
+    parts: [
+      {
+        inlineData: {
+          mimeType: mime,
+          data: base64Audio,
+        },
+      },
+      {
+        text: `Transcribe the spoken speech accurately into plain text in ${langHint}. Return only the verbatim spoken transcript without commentary or timestamps. If no intelligible speech is present, return an empty string.`,
+      },
+    ],
+  };
+
+  let responseText = '';
+  const attempts: Array<{ client: GoogleGenAI; model: string }> = [
+    { client: aiBeta, model: 'gemini-3.5-transcribe' },
+    { client: aiDefault, model: 'gemini-3.1-flash-lite' },
+  ];
+
+  let lastErr: unknown;
+  for (const attempt of attempts) {
+    try {
+      const response = await Promise.race([
+        attempt.client.models.generateContent({
+          model: attempt.model,
+          contents,
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`Gemini audio transcription timed out (${attempt.model}).`)), 22000)
+        ),
+      ]);
+      responseText = (response.text || '').trim().replace(/^["']|["']$/g, '');
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  if (lastErr) {
+    throw lastErr;
+  }
+
+  const langCodeMap: Record<string, string> = {
+    en: 'eng',
+    hi: 'hin',
+    bn: 'ben',
+    as: 'asm',
+    auto: 'auto',
+  };
+
+  return {
+    text: responseText,
+    languageCode: langCodeMap[params.language || 'auto'] || 'eng',
+  };
+}
+

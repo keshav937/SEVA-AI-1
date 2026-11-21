@@ -46,25 +46,40 @@ function SevaShell() {
   const [voiceDraft, setVoiceDraft] = useState<VoiceDraftPayload | null>(null);
   const [externalSpeakReq, setExternalSpeakReq] = useState<{ text: string; id: number } | null>(null);
 
-  const [myReports, setMyReports] = useState<CivicReport[]>([]);
+  const [firestoreReports, setFirestoreReports] = useState<CivicReport[]>([]);
+  const [serverReportsById, setServerReportsById] = useState<Record<string, Partial<CivicReport>>>({});
   const [publicTrackToken, setPublicTrackToken] = useState<string | null>(() => {
     const params = new URLSearchParams(window.location.search);
     return params.get('track');
   });
 
-  // Subscribe to user's own Firestore reports + real-time WebSocket operational updates
+  // Subscribe to user's own Firestore reports + operational server ledger + WebSocket updates
   useEffect(() => {
     if (!firebaseUser) {
-      setMyReports([]);
+      setFirestoreReports([]);
+      setServerReportsById({});
       return;
     }
+
+    fetch(`/api/citizen/reports/${encodeURIComponent(firebaseUser.uid)}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (Array.isArray(data.reports)) {
+          const mapped: Record<string, Partial<CivicReport>> = {};
+          for (const rep of data.reports as CivicReport[]) {
+            mapped[rep.id] = rep;
+          }
+          setServerReportsById(mapped);
+        }
+      })
+      .catch(() => {});
 
     const q = query(collection(db, 'reports'), where('reporterUid', '==', firebaseUser.uid));
     const unsub = onSnapshot(
       q,
       (snap) => {
         const list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as CivicReport));
-        setMyReports(list);
+        setFirestoreReports(list);
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'reports')
     );
@@ -79,9 +94,10 @@ function SevaShell() {
         const msg = JSON.parse(ev.data);
         if (msg.event === 'report:updated' && msg.payload) {
           const updated = msg.payload as CivicReport;
-          setMyReports((prev) =>
-            prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item))
-          );
+          setServerReportsById((prev) => ({
+            ...prev,
+            [updated.id]: updated,
+          }));
         }
       } catch {
         // ignore
@@ -93,6 +109,22 @@ function SevaShell() {
       ws.close();
     };
   }, [firebaseUser]);
+
+  const myReports = React.useMemo(() => {
+    return firestoreReports.map((fsRep) => {
+      const srv = serverReportsById[fsRep.id];
+      if (!srv) return fsRep;
+      return {
+        ...fsRep,
+        status: srv.status || fsRep.status,
+        fraudQueueStatus: srv.fraudQueueStatus || fsRep.fraudQueueStatus,
+        assignedOfficer: srv.assignedOfficer ?? fsRep.assignedOfficer,
+        actionNotes: srv.actionNotes ?? fsRep.actionNotes,
+        resolutionNotes: srv.resolutionNotes ?? fsRep.resolutionNotes,
+        timeline: srv.timeline || fsRep.timeline,
+      };
+    });
+  }, [firestoreReports, serverReportsById]);
 
   if (publicTrackToken) {
     return (

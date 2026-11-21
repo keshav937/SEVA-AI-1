@@ -187,12 +187,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     try {
       await updateDoc(userRef, payload);
-      await updateDoc(lbRef, {
-        displayName: payload.displayName,
-        city: payload.city,
-        ward: payload.ward,
-        updatedAt: serverTimestamp(),
-      });
+      const lbSnap = await getDoc(lbRef);
+      if (lbSnap.exists()) {
+        await updateDoc(lbRef, {
+          displayName: payload.displayName,
+          city: payload.city,
+          ward: payload.ward,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(lbRef, {
+          uid: firebaseUser.uid,
+          displayName: payload.displayName,
+          city: payload.city,
+          ward: payload.ward,
+          points: 0,
+          verifiedReportsCount: 0,
+          resolvedReportsCount: 0,
+          badgeTier: 'New Citizen',
+          badges: [],
+          updatedAt: serverTimestamp(),
+        });
+      }
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `users/${firebaseUser.uid}`);
     }

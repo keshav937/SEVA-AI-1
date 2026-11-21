@@ -72,6 +72,8 @@ export const SevaSaathiPanel: React.FC<SevaSaathiPanelProps> = ({
   const { lat, lng, address } = useLocationEngine();
 
   const [elevenlabsConfigured, setElevenlabsConfigured] = useState<boolean | null>(null);
+  const [geminiVoiceFallback, setGeminiVoiceFallback] = useState<boolean>(false);
+  const [activeVoiceProvider, setActiveVoiceProvider] = useState<'elevenlabs' | 'gemini' | 'browser' | null>(null);
   const [voices, setVoices] = useState<VoiceOption[]>([]);
   const [selectedVoiceId, setSelectedVoiceId] = useState('21m00Tcm4TlvDq8ikWAM');
   const [langCaps, setLangCaps] = useState<LanguageCapability[]>([]);
@@ -98,14 +100,19 @@ export const SevaSaathiPanel: React.FC<SevaSaathiPanelProps> = ({
   const chunksRef = useRef<Blob[]>([]);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
+  const createdUrlsRef = useRef<string[]>([]);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Load ElevenLabs capabilities on mount
+  const serverVoiceReady = Boolean(elevenlabsConfigured || geminiVoiceFallback);
+
+  // Load voice engine capabilities on mount
   useEffect(() => {
     fetch('/api/voice/capabilities')
       .then((r) => r.json())
       .then((data) => {
         setElevenlabsConfigured(Boolean(data.elevenlabsConfigured));
+        setGeminiVoiceFallback(Boolean(data.geminiVoiceFallback));
+        setActiveVoiceProvider(data.activeVoiceProvider || null);
         if (Array.isArray(data.voices) && data.voices.length > 0) {
           setVoices(data.voices);
           setSelectedVoiceId(data.voices[0].voice_id);
@@ -116,6 +123,7 @@ export const SevaSaathiPanel: React.FC<SevaSaathiPanelProps> = ({
       })
       .catch(() => {
         setElevenlabsConfigured(false);
+        setGeminiVoiceFallback(false);
       });
   }, []);
 
@@ -180,6 +188,8 @@ export const SevaSaathiPanel: React.FC<SevaSaathiPanelProps> = ({
     return () => {
       cleanupRecordingResources();
       stopAudioPlayback();
+      createdUrlsRef.current.forEach((u) => URL.revokeObjectURL(u));
+      createdUrlsRef.current = [];
     };
   }, [cleanupRecordingResources, stopAudioPlayback]);
 
@@ -222,11 +232,34 @@ export const SevaSaathiPanel: React.FC<SevaSaathiPanelProps> = ({
       if (muted || !text.trim()) return;
       stopAudioPlayback();
 
-      const activeLangCap = langCaps.find((l) => l.code === language);
-      if (activeLangCap && !activeLangCap.ttsSupported) {
-        setErrorBanner(activeLangCap.notes);
-        return;
-      }
+      const speakWithBrowserFallback = (content: string) => {
+        if (!('speechSynthesis' in window)) return false;
+        const utter = new SpeechSynthesisUtterance(content);
+        utter.lang =
+          language === 'hi'
+            ? 'hi-IN'
+            : language === 'bn'
+            ? 'bn-IN'
+            : language === 'as'
+            ? 'as-IN'
+            : 'en-IN';
+        utter.rate = 0.96;
+        utter.onstart = () => {
+          setPhase('speaking');
+          setIsPaused(false);
+        };
+        utter.onend = () => {
+          setPhase('idle');
+          setIsPaused(false);
+          setActiveAudioTurnId(null);
+        };
+        utter.onerror = () => {
+          setPhase('idle');
+          setActiveAudioTurnId(null);
+        };
+        window.speechSynthesis.speak(utter);
+        return true;
+      };
 
       setPhase('synthesizing');
       setActiveAudioTurnId(turnId);
@@ -244,17 +277,24 @@ export const SevaSaathiPanel: React.FC<SevaSaathiPanelProps> = ({
 
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
+          if (speakWithBrowserFallback(text)) return;
           setPhase('idle');
           setActiveAudioTurnId(null);
           setErrorBanner(
             errData.error ||
-              'ElevenLabs speech synthesis is unavailable. Text response is displayed below.'
+              'Server speech synthesis is unavailable. Text response is displayed below.'
           );
           return;
         }
 
+        const providerHeader = res.headers.get('X-Voice-Provider');
+        if (providerHeader === 'elevenlabs' || providerHeader === 'gemini') {
+          setActiveVoiceProvider(providerHeader);
+        }
+
         const audioBlob = await res.blob();
         const url = URL.createObjectURL(audioBlob);
+        createdUrlsRef.current.push(url);
         setTurns((prev) => prev.map((t) => (t.id === turnId ? { ...t, audioUrl: url } : t)));
 
         const audio = new Audio(url);
@@ -272,18 +312,21 @@ export const SevaSaathiPanel: React.FC<SevaSaathiPanelProps> = ({
           setActiveAudioTurnId(null);
         };
         audio.onerror = () => {
-          setPhase('idle');
-          setActiveAudioTurnId(null);
-          setErrorBanner('Audio playback failed on this device.');
+          if (!speakWithBrowserFallback(text)) {
+            setPhase('idle');
+            setActiveAudioTurnId(null);
+            setErrorBanner('Audio playback failed on this device.');
+          }
         };
         await audio.play();
       } catch (err: any) {
+        if (speakWithBrowserFallback(text)) return;
         setPhase('idle');
         setActiveAudioTurnId(null);
-        setErrorBanner(err?.message || 'Unable to generate ElevenLabs voice audio.');
+        setErrorBanner(err?.message || 'Unable to generate voice audio.');
       }
     },
-    [langCaps, language, muted, selectedVoiceId, stopAudioPlayback]
+    [language, muted, selectedVoiceId, stopAudioPlayback]
   );
 
   // Triggered from Authority Dashboard or Seva Shield spoken briefing requests
@@ -381,7 +424,7 @@ export const SevaSaathiPanel: React.FC<SevaSaathiPanelProps> = ({
         setTurns((prev) => [...prev, assistantTurn]);
         setPhase('idle');
 
-        if (!muted && elevenlabsConfigured) {
+        if (!muted && serverVoiceReady) {
           await playSpeechForText(assistantTurn.text, assistantTurnId);
         }
       } catch (err: any) {
@@ -392,7 +435,6 @@ export const SevaSaathiPanel: React.FC<SevaSaathiPanelProps> = ({
     [
       address,
       authoritySession,
-      elevenlabsConfigured,
       firebaseUser,
       language,
       lat,
@@ -401,6 +443,7 @@ export const SevaSaathiPanel: React.FC<SevaSaathiPanelProps> = ({
       myReports,
       playSpeechForText,
       profile?.role,
+      serverVoiceReady,
       turns,
     ]
   );
@@ -654,13 +697,19 @@ export const SevaSaathiPanel: React.FC<SevaSaathiPanelProps> = ({
             </select>
           </div>
 
-          {elevenlabsConfigured === false && (
-            <div className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-              <strong>ElevenLabs Key Required:</strong> Add <code className="font-mono">ELEVENLABS_API_KEY</code> in Settings &gt; Secrets to enable live voice transcription and ElevenLabs speech synthesis. Text chat remains fully functional.
+          {elevenlabsConfigured === false && geminiVoiceFallback && (
+            <div className="text-xs text-emerald-950 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+              <strong>Voice Engine Active (Gemini Speech Fallback):</strong> Live voice transcription and spoken replies are active right now. Add <code className="font-mono">ELEVENLABS_API_KEY</code> in Settings &gt; Secrets to use ElevenLabs voices.
             </div>
           )}
 
-          {currentLangInfo && !currentLangInfo.ttsSupported && (
+          {elevenlabsConfigured === false && !geminiVoiceFallback && (
+            <div className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              <strong>Voice Keys Missing:</strong> Add <code className="font-mono">ELEVENLABS_API_KEY</code> or <code className="font-mono">GEMINI_API_KEY</code> in Settings &gt; Secrets for live voice synthesis. Text chat remains available.
+            </div>
+          )}
+
+          {currentLangInfo && currentLangInfo.code !== 'en' && currentLangInfo.code !== 'hi' && (
             <div className="text-xs text-slate-700 bg-white border border-slate-200 rounded-lg px-3 py-2">
               {currentLangInfo.notes}
             </div>
@@ -674,7 +723,7 @@ export const SevaSaathiPanel: React.FC<SevaSaathiPanelProps> = ({
               className="mt-0.5 rounded border-slate-300 text-green-900 focus:ring-green-900"
             />
             <span>
-              I consent to transient microphone audio processing via ElevenLabs for civic assistance. Audio clips are not stored permanently.
+              I consent to transient microphone audio processing for civic assistance. Audio clips are not stored permanently.
             </span>
           </label>
         </div>
@@ -838,9 +887,11 @@ export const SevaSaathiPanel: React.FC<SevaSaathiPanelProps> = ({
           <div className="flex items-center justify-between gap-3">
             <div className="text-xs font-medium text-slate-700">
               {phase === 'listening' && 'Listening to your voice...'}
-              {phase === 'transcribing' && 'Converting speech to text via ElevenLabs...'}
+              {phase === 'transcribing' &&
+                `Converting speech to text (${activeVoiceProvider === 'elevenlabs' ? 'ElevenLabs Scribe' : 'Gemini Speech'})...`}
               {phase === 'thinking' && 'Processing civic request with SEVA AI...'}
-              {phase === 'synthesizing' && 'Generating natural speech via ElevenLabs...'}
+              {phase === 'synthesizing' &&
+                `Generating natural speech (${activeVoiceProvider === 'elevenlabs' ? 'ElevenLabs' : 'Gemini Speech'})...`}
               {phase === 'speaking' && (isPaused ? 'Playback paused' : 'Speaking response...')}
               {phase === 'idle' && 'Ready for voice or text'}
             </div>
