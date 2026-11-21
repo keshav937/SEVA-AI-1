@@ -70,7 +70,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
   onStartReportCategory,
   onOpenVoice,
 }) => {
-  const { firebaseUser, profile, signInWithGoogle } = useAuth();
+  const { firebaseUser, profile, signingIn, signInWithGoogle } = useAuth();
   const { lat, lng, address, requestCurrentLocation } = useLocationEngine();
 
   return (
@@ -116,10 +116,11 @@ export const HomeView: React.FC<HomeViewProps> = ({
               {!firebaseUser && (
                 <button
                   type="button"
+                  disabled={signingIn}
                   onClick={() => signInWithGoogle()}
-                  className="inline-flex items-center gap-2 px-4 py-3 text-sm font-medium text-green-900 hover:underline"
+                  className="inline-flex items-center gap-2 px-4 py-3 text-sm font-medium text-green-900 hover:underline disabled:opacity-50"
                 >
-                  Citizen Sign In
+                  {signingIn ? 'Signing in...' : 'Citizen Sign In'}
                   <ArrowRight className="w-4 h-4" />
                 </button>
               )}

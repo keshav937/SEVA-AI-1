@@ -11,12 +11,12 @@ import {
   where,
 } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { OperationType, db, handleFirestoreError } from '../lib/firebase';
+import { OperationType, buildFirestoreErrorInfo, db } from '../lib/firebase';
 import { UserNotification } from '../types/seva';
 import { LiveTrackingPanel } from './LiveTrackingPanel';
 
 export const ProfilePrivacyView: React.FC = () => {
-  const { firebaseUser, profile, signInWithGoogle, logout, updateCitizenProfile } = useAuth();
+  const { firebaseUser, profile, signingIn, signInWithGoogle, logout, updateCitizenProfile } = useAuth();
 
   const [fullName, setFullName] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -25,6 +25,7 @@ export const ProfilePrivacyView: React.FC = () => {
   const [ward, setWard] = useState('');
   const [dpdpConsent, setDpdpConsent] = useState(true);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<UserNotification[]>([]);
 
   useEffect(() => {
@@ -48,31 +49,38 @@ export const ProfilePrivacyView: React.FC = () => {
       (snap) => {
         setNotifications(snap.docs.map((d) => ({ id: d.id, ...d.data() } as UserNotification)));
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'notifications')
+      (err) => {
+        buildFirestoreErrorInfo(err, OperationType.LIST, 'notifications');
+      }
     );
   }, [firebaseUser]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaveMsg(null);
+    setSaveError(null);
     if (!firebaseUser) return;
-    await updateCitizenProfile({ fullName, displayName, phone, city, ward, dpdpConsent });
-    const cId = `con_${Date.now()}`;
-    await setDoc(doc(db, 'consentRecords', cId), {
-      uid: firebaseUser.uid,
-      consentType: 'dpdp_account',
-      granted: dpdpConsent,
-      purpose: 'Civic issue reporting, GPS location sensing, and Seva Samman portfolio.',
-      createdAt: serverTimestamp(),
-    });
-    setSaveMsg('Profile & DPDP consent preferences saved.');
+    try {
+      await updateCitizenProfile({ fullName, displayName, phone, city, ward, dpdpConsent });
+      const cId = `con_${Date.now()}`;
+      await setDoc(doc(db, 'consentRecords', cId), {
+        uid: firebaseUser.uid,
+        consentType: 'dpdp_account',
+        granted: dpdpConsent,
+        purpose: 'Civic issue reporting, GPS location sensing, and Seva Samman portfolio.',
+        createdAt: serverTimestamp(),
+      });
+      setSaveMsg('Profile & DPDP consent preferences saved.');
+    } catch (err: any) {
+      setSaveError(err?.message || 'Unable to save profile preferences.');
+    }
   };
 
   const markRead = async (id: string) => {
     try {
       await updateDoc(doc(db, 'notifications', id), { read: true });
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `notifications/${id}`);
+      buildFirestoreErrorInfo(err, OperationType.UPDATE, `notifications/${id}`);
     }
   };
 
@@ -87,10 +95,11 @@ export const ProfilePrivacyView: React.FC = () => {
         </p>
         <button
           type="button"
+          disabled={signingIn}
           onClick={() => signInWithGoogle()}
-          className="px-5 py-2.5 bg-green-900 text-white text-sm font-medium rounded-lg"
+          className="px-5 py-2.5 bg-green-900 text-white text-sm font-medium rounded-lg disabled:opacity-50"
         >
-          Sign In with Google
+          {signingIn ? 'Signing in...' : 'Sign In with Google'}
         </button>
       </div>
     );
@@ -203,6 +212,11 @@ export const ProfilePrivacyView: React.FC = () => {
             <div className="flex items-center gap-2 text-xs text-green-900 font-medium">
               <CheckCircle2 className="w-4 h-4" />
               {saveMsg}
+            </div>
+          )}
+          {saveError && (
+            <div className="text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg p-2.5">
+              {saveError}
             </div>
           )}
         </form>

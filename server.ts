@@ -110,6 +110,14 @@ async function startServer() {
   app.set('trust proxy', 1);
   app.use(express.json({ limit: '4mb' }));
 
+  // Allow Firebase Auth popup windows (signInWithPopup) to communicate back to the opener inside iframes & proxies
+  app.use((req, res, next) => {
+    if (!req.path.startsWith('/api/')) {
+      res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+    }
+    next();
+  });
+
   // Health Check (Render + Diagnostics)
   app.get('/api/health', (_req, res) => {
     res.json({
@@ -554,17 +562,18 @@ async function startServer() {
       return res.status(429).json({ error: 'Too many verification attempts. Please wait a minute.' });
     }
 
-    const { uid, email, name, department, jurisdiction, passcode } = req.body as {
+    const { uid, email, name, department, jurisdiction, passcode, googleSignedIn } = req.body as {
       uid?: string;
       email?: string;
       name?: string;
       department?: string;
       jurisdiction?: string;
       passcode?: string;
+      googleSignedIn?: boolean;
     };
 
-    if (!uid || !email || !department || !passcode) {
-      return res.status(400).json({ error: 'Signed-in account, department, and official access code are required.' });
+    if (!email || !department || !passcode) {
+      return res.status(400).json({ error: 'Officer email, department, and official access code are required.' });
     }
 
     if (!isAuthorityPasscodeConfigured()) {
@@ -578,22 +587,29 @@ async function startServer() {
       return res.status(403).json({ error: 'Invalid department access code.' });
     }
 
-    const isAdmin = email.toLowerCase() === 'guptakeshav2178@gmail.com' || department === 'Platform Administration';
+    const safeUid = (uid && /^[a-zA-Z0-9_-]{3,128}$/.test(uid))
+      ? uid
+      : `officer_${crypto.createHash('sha256').update(email.toLowerCase()).digest('hex').slice(0, 16)}`;
+
+    const isAdmin = Boolean(googleSignedIn) && (
+      email.toLowerCase() === 'guptakeshav2178@gmail.com' ||
+      department === 'Platform Administration'
+    );
     const session = createAuthoritySession({
-      uid,
-      email,
-      name: name || 'Authority Officer',
+      uid: safeUid,
+      email: email.trim().slice(0, 200),
+      name: (name || 'Authority Officer').trim().slice(0, 120),
       department,
       jurisdiction: jurisdiction || 'Citywide',
       isAdmin,
     });
 
     addAuditLog({
-      actorUid: uid,
+      actorUid: safeUid,
       actorRole: session.role,
       department: session.department,
       action: 'authority_login',
-      targetId: uid,
+      targetId: safeUid,
       detail: `Direct authenticated access granted for ${department} (${jurisdiction || 'Citywide'}).`,
     });
 

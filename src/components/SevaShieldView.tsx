@@ -26,7 +26,7 @@ import {
 } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocationEngine } from '../contexts/LocationContext';
-import { OperationType, db, handleFirestoreError } from '../lib/firebase';
+import { OperationType, buildFirestoreErrorInfo, db, handleFirestoreError } from '../lib/firebase';
 import { EmergencyContact, MedicalRequest, NearbyPlace, SosEvent } from '../types/seva';
 
 interface SevaShieldViewProps {
@@ -34,7 +34,7 @@ interface SevaShieldViewProps {
 }
 
 export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) => {
-  const { firebaseUser, profile, signInWithGoogle } = useAuth();
+  const { firebaseUser, profile, signingIn, signInWithGoogle } = useAuth();
   const {
     lat,
     lng,
@@ -93,7 +93,9 @@ export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) =
       (snap) => {
         setContacts(snap.docs.map((d) => ({ id: d.id, ...d.data() } as EmergencyContact)));
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'emergencyContacts')
+      (err) => {
+        buildFirestoreErrorInfo(err, OperationType.LIST, 'emergencyContacts');
+      }
     );
 
     const qSos = query(collection(db, 'sosEvents'), where('uid', '==', firebaseUser.uid));
@@ -105,7 +107,9 @@ export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) =
         const currentActive = list.find((s) => s.status === 'active') || null;
         setActiveSos(currentActive);
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'sosEvents')
+      (err) => {
+        buildFirestoreErrorInfo(err, OperationType.LIST, 'sosEvents');
+      }
     );
 
     const qMed = query(collection(db, 'medicalRequests'), where('uid', '==', firebaseUser.uid));
@@ -114,7 +118,9 @@ export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) =
       (snap) => {
         setMedicalHistory(snap.docs.map((d) => ({ id: d.id, ...d.data() } as MedicalRequest)));
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'medicalRequests')
+      (err) => {
+        buildFirestoreErrorInfo(err, OperationType.LIST, 'medicalRequests');
+      }
     );
 
     return () => {
@@ -526,10 +532,11 @@ export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) =
           </p>
           <button
             type="button"
+            disabled={signingIn}
             onClick={() => signInWithGoogle()}
-            className="px-4 py-2 bg-green-900 text-white text-xs font-medium rounded-lg"
+            className="px-4 py-2 bg-green-900 text-white text-xs font-medium rounded-lg disabled:opacity-50"
           >
-            Sign In
+            {signingIn ? 'Signing in...' : 'Sign In with Google'}
           </button>
         </div>
       )}

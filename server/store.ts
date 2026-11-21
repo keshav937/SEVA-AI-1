@@ -111,16 +111,17 @@ export interface AuthoritySession {
 }
 
 interface PersistedState {
+  sessionSecret?: string;
   authorityPasscodeHash?: string;
   authorityPasscodeSalt?: string;
   reports: OperationalReportRecord[];
   sosEvents: OperationalSosRecord[];
   auditLogs: AuditLogEntry[];
+  trackingSessions?: Record<string, LiveTrackingRecord>;
 }
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'seva-operational.json');
-const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
 const activeTracking = new Map<string, LiveTrackingRecord>();
 const authoritySessions = new Map<string, AuthoritySession>();
@@ -130,21 +131,37 @@ function loadState(): PersistedState {
     if (fs.existsSync(DATA_FILE)) {
       const raw = fs.readFileSync(DATA_FILE, 'utf8');
       const parsed = JSON.parse(raw) as PersistedState;
+      const loadedTracking = parsed.trackingSessions && typeof parsed.trackingSessions === 'object' ? parsed.trackingSessions : {};
+      for (const [k, v] of Object.entries(loadedTracking)) {
+        if (v && v.shareToken) activeTracking.set(k, v);
+      }
       return {
+        sessionSecret: parsed.sessionSecret,
         authorityPasscodeHash: parsed.authorityPasscodeHash,
         authorityPasscodeSalt: parsed.authorityPasscodeSalt,
         reports: Array.isArray(parsed.reports) ? parsed.reports : [],
         sosEvents: Array.isArray(parsed.sosEvents) ? parsed.sosEvents : [],
         auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
+        trackingSessions: loadedTracking,
       };
     }
   } catch (err) {
     console.error('Failed to load operational store:', err);
   }
-  return { reports: [], sosEvents: [], auditLogs: [] };
+  return { reports: [], sosEvents: [], auditLogs: [], trackingSessions: {} };
 }
 
 let state: PersistedState = loadState();
+
+function getSessionSecret(): string {
+  const envSecret = process.env.SESSION_SECRET?.trim();
+  if (envSecret && envSecret.length >= 16) return envSecret;
+  if (!state.sessionSecret) {
+    state.sessionSecret = crypto.randomBytes(32).toString('hex');
+    persistState();
+  }
+  return state.sessionSecret;
+}
 
 function persistState() {
   try {
@@ -211,18 +228,29 @@ export function createAuthoritySession(params: {
   jurisdiction: string;
   isAdmin: boolean;
 }): AuthoritySession {
-  const payload = `${params.uid}:${params.department}:${Date.now()}:${crypto.randomBytes(12).toString('hex')}`;
-  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('hex');
-  const token = `${Buffer.from(payload).toString('base64url')}.${sig}`;
-  const session: AuthoritySession = {
-    token,
+  const expiresAt = Date.now() + 8 * 60 * 60 * 1000;
+  const claims = {
     uid: params.uid,
     email: params.email,
     name: params.name,
     department: params.department,
     jurisdiction: params.jurisdiction,
-    role: params.isAdmin ? 'admin' : 'authority',
-    expiresAt: Date.now() + 8 * 60 * 60 * 1000,
+    role: (params.isAdmin ? 'admin' : 'authority') as 'admin' | 'authority',
+    expiresAt,
+    nonce: crypto.randomBytes(8).toString('hex'),
+  };
+  const body = Buffer.from(JSON.stringify(claims), 'utf8').toString('base64url');
+  const sig = crypto.createHmac('sha256', getSessionSecret()).update(body).digest('hex');
+  const token = `${body}.${sig}`;
+  const session: AuthoritySession = {
+    token,
+    uid: claims.uid,
+    email: claims.email,
+    name: claims.name,
+    department: claims.department,
+    jurisdiction: claims.jurisdiction,
+    role: claims.role,
+    expiresAt,
   };
   authoritySessions.set(token, session);
   return session;
@@ -230,13 +258,48 @@ export function createAuthoritySession(params: {
 
 export function getAuthoritySession(token: string | undefined): AuthoritySession | null {
   if (!token) return null;
-  const session = authoritySessions.get(token);
-  if (!session) return null;
-  if (session.expiresAt < Date.now()) {
-    authoritySessions.delete(token);
+  const cached = authoritySessions.get(token);
+  if (cached) {
+    if (cached.expiresAt < Date.now()) {
+      authoritySessions.delete(token);
+      return null;
+    }
+    return cached;
+  }
+
+  // Stateless HMAC verification fallback so sessions survive server restarts & Render sleep/wake
+  const dotIdx = token.indexOf('.');
+  if (dotIdx <= 0) return null;
+  const body = token.slice(0, dotIdx);
+  const sig = token.slice(dotIdx + 1);
+  if (!body || !sig || sig.length !== 64) return null;
+
+  try {
+    const expectedSig = crypto.createHmac('sha256', getSessionSecret()).update(body).digest('hex');
+    const sigBuf = Buffer.from(sig, 'hex');
+    const expBuf = Buffer.from(expectedSig, 'hex');
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+      return null;
+    }
+    const parsed = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as AuthoritySession;
+    if (!parsed || !parsed.uid || !parsed.department || !parsed.expiresAt || parsed.expiresAt < Date.now()) {
+      return null;
+    }
+    const session: AuthoritySession = {
+      token,
+      uid: parsed.uid,
+      email: parsed.email || '',
+      name: parsed.name || 'Authority Officer',
+      department: parsed.department,
+      jurisdiction: parsed.jurisdiction || 'Citywide',
+      role: parsed.role === 'admin' ? 'admin' : 'authority',
+      expiresAt: parsed.expiresAt,
+    };
+    authoritySessions.set(token, session);
+    return session;
+  } catch {
     return null;
   }
-  return session;
 }
 
 export function addAuditLog(entry: Omit<AuditLogEntry, 'id' | 'timestamp'>) {
@@ -353,6 +416,17 @@ export function getPublicHeatmapIncidents() {
 
 export function upsertTrackingSession(record: LiveTrackingRecord) {
   activeTracking.set(record.shareToken, record);
+  if (!state.trackingSessions) state.trackingSessions = {};
+  state.trackingSessions[record.shareToken] = record;
+  // Prune expired tracking sessions to keep file compact
+  const now = Date.now();
+  for (const [key, val] of Object.entries(state.trackingSessions)) {
+    if (val && new Date(val.expiresAt).getTime() < now - 3600_000) {
+      delete state.trackingSessions[key];
+      activeTracking.delete(key);
+    }
+  }
+  persistState();
 }
 
 export function getTrackingSession(shareToken: string): LiveTrackingRecord | null {

@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { doc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
-import { OperationType, db, handleFirestoreError } from '../lib/firebase';
+import { OperationType, buildFirestoreErrorInfo, db } from '../lib/firebase';
 import { useAuth } from './AuthContext';
 
 export type GpsState =
@@ -330,7 +330,7 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
             updatedAt: serverTimestamp(),
           });
         } catch (err) {
-          handleFirestoreError(err, OperationType.CREATE, `trackingSessions/${token}`);
+          buildFirestoreErrorInfo(err, OperationType.CREATE, `trackingSessions/${token}`);
         }
       }
 

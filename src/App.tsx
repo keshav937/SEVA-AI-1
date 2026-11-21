@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Menu, Mic, X } from 'lucide-react';
+import { AlertCircle, LogIn, Menu, Mic, User, X } from 'lucide-react';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { AuthorityDashboardView } from './components/AuthorityDashboardView';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -15,7 +15,7 @@ import { SevaSaathiPanel } from './components/SevaSaathiPanel';
 import { SevaShieldView } from './components/SevaShieldView';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { LocationProvider } from './contexts/LocationContext';
-import { OperationType, db, handleFirestoreError } from './lib/firebase';
+import { OperationType, buildFirestoreErrorInfo, db } from './lib/firebase';
 import {
   AppTab,
   CivicCategory,
@@ -36,7 +36,15 @@ const NAV_ITEMS: Array<{ id: AppTab; label: string }> = [
 ];
 
 function SevaShell() {
-  const { firebaseUser } = useAuth();
+  const {
+    firebaseUser,
+    profile,
+    signingIn,
+    signInWithGoogle,
+    authError,
+    clearAuthError,
+    firestoreStatus,
+  } = useAuth();
 
   const [activeTab, setActiveTab] = useState<AppTab>('home');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -48,6 +56,7 @@ function SevaShell() {
 
   const [firestoreReports, setFirestoreReports] = useState<CivicReport[]>([]);
   const [serverReportsById, setServerReportsById] = useState<Record<string, Partial<CivicReport>>>({});
+  const [reportsError, setReportsError] = useState<string | null>(null);
   const [publicTrackToken, setPublicTrackToken] = useState<string | null>(() => {
     const params = new URLSearchParams(window.location.search);
     return params.get('track');
@@ -58,6 +67,7 @@ function SevaShell() {
     if (!firebaseUser) {
       setFirestoreReports([]);
       setServerReportsById({});
+      setReportsError(null);
       return;
     }
 
@@ -78,10 +88,14 @@ function SevaShell() {
     const unsub = onSnapshot(
       q,
       (snap) => {
+        setReportsError(null);
         const list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as CivicReport));
         setFirestoreReports(list);
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'reports')
+      (err) => {
+        const info = buildFirestoreErrorInfo(err, OperationType.LIST, 'reports');
+        setReportsError(`Unable to sync reports from Firestore: ${info.error}`);
+      }
     );
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -163,7 +177,7 @@ function SevaShell() {
     <div className="min-h-screen flex flex-col bg-white text-slate-900">
       {/* Clean 3-Zone Top Bar Contract */}
       <header className="sticky top-0 z-40 bg-white/95 backdrop-blur border-b border-slate-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
           {/* Zone 1: Single-line Brand Wordmark */}
           <button
             type="button"
@@ -174,7 +188,7 @@ function SevaShell() {
           </button>
 
           {/* Zone 2: Single-line Text Navigation Links */}
-          <nav className="hidden lg:flex items-center gap-5 text-sm font-medium text-slate-600">
+          <nav className="hidden lg:flex items-center gap-4 text-sm font-medium text-slate-600">
             {NAV_ITEMS.map((item) => (
               <button
                 key={item.id}
@@ -191,12 +205,34 @@ function SevaShell() {
             ))}
           </nav>
 
-          {/* Zone 3: Single Primary Action + Mobile Menu Trigger */}
+          {/* Zone 3: Single Primary Action + Account + Mobile Menu Trigger */}
           <div className="flex items-center gap-2 shrink-0">
+            {firebaseUser ? (
+              <button
+                type="button"
+                onClick={() => handleNavigate('profile')}
+                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 border border-slate-200 text-slate-800 text-xs font-medium rounded-lg hover:bg-slate-50 whitespace-nowrap shrink-0 max-w-[140px]"
+                title={firebaseUser.email || 'Signed in'}
+              >
+                <User className="w-3.5 h-3.5 text-green-900 shrink-0" />
+                <span className="truncate">{profile?.displayName || firebaseUser.displayName || 'Account'}</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={signingIn}
+                onClick={() => signInWithGoogle()}
+                className="inline-flex items-center gap-1.5 px-3 py-2 border border-slate-200 text-slate-800 text-xs font-semibold rounded-lg hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap shrink-0"
+              >
+                <LogIn className="w-3.5 h-3.5 text-green-900" />
+                {signingIn ? 'Signing in...' : 'Sign In'}
+              </button>
+            )}
+
             <button
               type="button"
               onClick={() => setVoiceOpen(true)}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-green-900 text-white text-xs font-semibold rounded-lg hover:bg-green-800 transition-colors whitespace-nowrap shrink-0"
+              className="inline-flex items-center gap-2 px-3.5 py-2 bg-green-900 text-white text-xs font-semibold rounded-lg hover:bg-green-800 transition-colors whitespace-nowrap shrink-0"
             >
               <Mic className="w-3.5 h-3.5" />
               SEVA SAATHI
@@ -247,6 +283,53 @@ function SevaShell() {
 
       {/* Main Content */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-8">
+        {authError && (
+          <div
+            role="alert"
+            className="mb-6 border border-red-300 bg-red-50 rounded-xl p-4 flex flex-wrap items-start justify-between gap-3"
+          >
+            <div className="flex items-start gap-2.5 text-sm text-red-900">
+              <AlertCircle className="w-5 h-5 text-red-700 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <div className="font-semibold">Sign-In Notice</div>
+                <p className="text-xs leading-relaxed">{authError}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {!firebaseUser && (
+                <button
+                  type="button"
+                  disabled={signingIn}
+                  onClick={() => signInWithGoogle()}
+                  className="px-3 py-1.5 bg-red-700 text-white text-xs font-medium rounded-lg hover:bg-red-800 disabled:opacity-50"
+                >
+                  {signingIn ? 'Signing in...' : 'Retry Google Sign-In'}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={clearAuthError}
+                aria-label="Dismiss sign-in notice"
+                className="p-1.5 text-red-800 hover:bg-red-100 rounded-md"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {firestoreStatus === 'offline' && (
+          <div className="mb-6 border border-amber-300 bg-amber-50 rounded-xl p-3.5 text-xs text-amber-950">
+            Database connection warning: Firestore appears offline or unreachable. Check your internet connection or Firebase configuration.
+          </div>
+        )}
+
+        {reportsError && (
+          <div className="mb-6 border border-amber-300 bg-amber-50 rounded-xl p-3.5 text-xs text-amber-950">
+            {reportsError}
+          </div>
+        )}
+
         {activeTab === 'home' && (
           <HomeView
             myReports={myReports}

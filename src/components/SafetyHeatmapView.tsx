@@ -25,17 +25,22 @@ export const SafetyHeatmapView: React.FC = () => {
   const [severityFilter, setSeverityFilter] = useState('All');
   const [timeFilter, setTimeFilter] = useState<'all' | 'day' | 'night'>('all');
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadHeatmap = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const qs = new URLSearchParams();
       if (categoryFilter !== 'All') qs.set('category', categoryFilter);
       if (severityFilter !== 'All') qs.set('severity', severityFilter);
       const res = await fetch(`/api/heatmap?${qs.toString()}`);
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Unable to load heatmap data.');
       setIncidents(data.incidents || []);
       setUpdatedAt(data.updatedAt || new Date().toISOString());
+    } catch (err: any) {
+      setLoadError(err?.message || 'Unable to load safety heatmap right now.');
     } finally {
       setLoading(false);
     }
@@ -193,6 +198,12 @@ export const SafetyHeatmapView: React.FC = () => {
           {updatedAt ? new Date(updatedAt).toLocaleTimeString() : 'just now'}
         </div>
       </div>
+
+      {loadError && (
+        <div className="text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg p-3">
+          {loadError}
+        </div>
+      )}
 
       {/* Map + Legend */}
       <LeafletMap

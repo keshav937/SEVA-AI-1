@@ -15,5 +15,7 @@ services:
         sync: false
       - key: AUTHORITY_ACCESS_CODE
         sync: false
+      - key: SESSION_SECRET
+        generateValue: true
       - key: APP_URL
         sync: false

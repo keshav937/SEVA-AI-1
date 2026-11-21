@@ -87,7 +87,7 @@ export const ReportIssueView: React.FC<ReportIssueViewProps> = ({
   onOpenVoiceAssistant,
   onSubmittedSuccess,
 }) => {
-  const { firebaseUser, profile, signInWithGoogle } = useAuth();
+  const { firebaseUser, profile, signingIn, signInWithGoogle } = useAuth();
   const { lat, lng, accuracyMeters, address, ward, city, requestCurrentLocation, setManualLocation } =
     useLocationEngine();
 
@@ -447,10 +447,11 @@ export const ReportIssueView: React.FC<ReportIssueViewProps> = ({
           </p>
           <button
             type="button"
+            disabled={signingIn}
             onClick={() => signInWithGoogle()}
-            className="px-4 py-2 bg-green-900 text-white text-xs font-medium rounded-lg hover:bg-green-800"
+            className="px-4 py-2 bg-green-900 text-white text-xs font-medium rounded-lg hover:bg-green-800 disabled:opacity-50"
           >
-            Sign In with Google
+            {signingIn ? 'Signing in...' : 'Sign In with Google'}
           </button>
         </div>
       )}

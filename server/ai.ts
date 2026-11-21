@@ -30,7 +30,20 @@ function parseJsonResponse<T>(text: string | undefined, fallback: T): T {
     .replace(/\s*```$/i, '')
     .trim();
   if (!cleaned) return fallback;
-  return JSON.parse(cleaned) as T;
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch {
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(cleaned.slice(start, end + 1)) as T;
+      } catch {
+        return fallback;
+      }
+    }
+    return fallback;
+  }
 }
 
 async function generateWithFallback(
@@ -48,7 +61,7 @@ async function generateWithFallback(
           thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         };
       }
-      const timeoutMs = model === 'gemini-3.1-flash-lite' ? 15000 : 18000;
+      const timeoutMs = model === 'gemini-3.1-flash-lite' ? 18000 : 20000;
       const response = await Promise.race([
         ai.models.generateContent(req),
         new Promise<never>((_, reject) =>
@@ -61,12 +74,22 @@ async function generateWithFallback(
       const msg = String(err?.message || err || '');
       const status = err?.status || err?.code;
       const isTransient =
+        status === 500 ||
+        status === 502 ||
         status === 503 ||
+        status === 504 ||
         status === 429 ||
+        msg.includes('500') ||
+        msg.includes('502') ||
         msg.includes('503') ||
+        msg.includes('504') ||
         msg.includes('UNAVAILABLE') ||
+        msg.includes('DEADLINE_EXCEEDED') ||
         msg.includes('high demand') ||
         msg.includes('429') ||
+        msg.includes('fetch failed') ||
+        msg.includes('ECONNRESET') ||
+        msg.includes('ETIMEDOUT') ||
         msg.includes('AI_TIMEOUT');
       if (!isTransient) throw err;
       if (i < AI_MODEL_CHAIN.length - 1) {

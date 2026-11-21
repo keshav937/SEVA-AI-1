@@ -61,13 +61,22 @@ interface AuthorityDashboardViewProps {
 }
 
 export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({ onSpeakText }) => {
-  const { firebaseUser, authoritySession, verifyAuthorityAccess, clearAuthoritySession, signInWithGoogle } =
-    useAuth();
+  const {
+    firebaseUser,
+    authoritySession,
+    verifyAuthorityAccess,
+    clearAuthoritySession,
+    signInWithGoogle,
+    signingIn,
+    authError,
+  } = useAuth();
 
   const [passcodeConfigured, setPasscodeConfigured] = useState<boolean | null>(null);
   const [setupPasscode, setSetupPasscode] = useState('');
   const [department, setDepartment] = useState('Municipal Corporation');
   const [jurisdiction, setJurisdiction] = useState('Central & Citywide');
+  const [officerEmail, setOfficerEmail] = useState('');
+  const [officerNameInput, setOfficerNameInput] = useState('');
   const [passcodeInput, setPasscodeInput] = useState('');
   const [authMsg, setAuthMsg] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
@@ -106,13 +115,22 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({ 
     const res = await fetch(`/api/authority/reports?${qs.toString()}`, {
       headers: { Authorization: `Bearer ${authoritySession.token}` },
     });
-    if (!res.ok) return;
+    if (res.status === 401) {
+      clearAuthoritySession();
+      setAuthMsg('Authority session expired. Please re-enter your department access code.');
+      return;
+    }
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      setActionFeedback(errJson.error || 'Unable to load authority reports.');
+      return;
+    }
     const data = await res.json();
     setReports(data.reports || []);
     setStats(data.stats || {});
     setSosEvents(data.sosEvents || []);
     setAuditLogs(data.auditLogs || []);
-  }, [authoritySession, queueTab, severityFilter, statusFilter]);
+  }, [authoritySession, clearAuthoritySession, queueTab, severityFilter, statusFilter]);
 
   useEffect(() => {
     fetchAuthorityData();
@@ -153,12 +171,18 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({ 
   const handleVerifySubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthMsg(null);
+    if (!firebaseUser && !officerEmail.trim()) {
+      setAuthMsg('Please sign in with Google above or enter your official department email address.');
+      return;
+    }
     setVerifying(true);
     try {
       await verifyAuthorityAccess({
         department,
         jurisdiction,
         passcode: passcodeInput,
+        officerEmail: officerEmail.trim() || undefined,
+        officerName: officerNameInput.trim() || undefined,
       });
     } catch (err: any) {
       setAuthMsg(err?.message || 'Verification failed.');
@@ -290,18 +314,29 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({ 
           </p>
         </div>
 
-        {!firebaseUser && (
-          <div className="border border-amber-200 bg-amber-50 rounded-xl p-4 flex items-center justify-between gap-3">
-            <span className="text-xs text-amber-950">
-              Step 1: Authenticate your official Google identity.
-            </span>
-            <button
-              type="button"
-              onClick={() => signInWithGoogle()}
-              className="px-4 py-2 bg-green-900 text-white text-xs font-medium rounded-lg"
-            >
-              Sign In with Google
-            </button>
+        {!firebaseUser ? (
+          <div className="border border-amber-200 bg-amber-50 rounded-xl p-4 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span className="text-xs text-amber-950">
+                Recommended: Authenticate your official Google identity (or enter your official email + department code below).
+              </span>
+              <button
+                type="button"
+                disabled={signingIn}
+                onClick={() => signInWithGoogle()}
+                className="px-4 py-2 bg-green-900 text-white text-xs font-medium rounded-lg disabled:opacity-50"
+              >
+                {signingIn ? 'Signing in...' : 'Sign In with Google'}
+              </button>
+            </div>
+            {authError && (
+              <p className="text-xs text-red-800 font-medium">{authError}</p>
+            )}
+          </div>
+        ) : (
+          <div className="border border-emerald-200 bg-emerald-50 rounded-xl px-4 py-3 text-xs text-emerald-950 flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+            <span>Google identity verified: <strong>{firebaseUser.email}</strong></span>
           </div>
         )}
 
@@ -341,6 +376,36 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({ 
           onSubmit={handleVerifySubmit}
           className="border border-slate-200 rounded-xl bg-white p-6 space-y-4"
         >
+          {!firebaseUser && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Officer Name
+                </label>
+                <input
+                  type="text"
+                  value={officerNameInput}
+                  onChange={(e) => setOfficerNameInput(e.target.value)}
+                  placeholder="Officer full name"
+                  className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2.5"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Official Department Email
+                </label>
+                <input
+                  type="email"
+                  value={officerEmail}
+                  onChange={(e) => setOfficerEmail(e.target.value)}
+                  placeholder="officer@municipality.gov.in"
+                  className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2.5"
+                  required={!firebaseUser}
+                />
+              </div>
+            </div>
+          )}
+
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1">
               Assigned Department
@@ -393,7 +458,7 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({ 
 
           <button
             type="submit"
-            disabled={!firebaseUser || verifying}
+            disabled={verifying || (!firebaseUser && !officerEmail.trim())}
             className="w-full py-2.5 bg-green-900 text-white text-sm font-medium rounded-lg hover:bg-green-800 disabled:opacity-50 inline-flex items-center justify-center gap-2"
           >
             <Lock className="w-4 h-4" />

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { CheckCircle2, Clock, MapPin, MessageSquare, Star } from 'lucide-react';
 import { doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { OperationType, db, handleFirestoreError } from '../lib/firebase';
+import { OperationType, buildFirestoreErrorInfo, db } from '../lib/firebase';
 import { CivicReport } from '../types/seva';
 
 interface MyReportsViewProps {
@@ -11,7 +11,7 @@ interface MyReportsViewProps {
 }
 
 export const MyReportsView: React.FC<MyReportsViewProps> = ({ reports, onGoToReport }) => {
-  const { firebaseUser, signInWithGoogle } = useAuth();
+  const { firebaseUser, signingIn, signInWithGoogle } = useAuth();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [extraDetail, setExtraDetail] = useState('');
   const [rating, setRating] = useState(5);
@@ -37,8 +37,9 @@ export const MyReportsView: React.FC<MyReportsViewProps> = ({ reports, onGoToRep
       });
       setExtraDetail('');
       setActionMsg('Additional information appended to your report.');
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `reports/${report.id}`);
+    } catch (err: any) {
+      const info = buildFirestoreErrorInfo(err, OperationType.UPDATE, `reports/${report.id}`);
+      setActionMsg(`Unable to update report: ${info.error}`);
     }
   };
 
@@ -52,8 +53,9 @@ export const MyReportsView: React.FC<MyReportsViewProps> = ({ reports, onGoToRep
       });
       setFeedbackComment('');
       setActionMsg('Thank you! Resolution feedback recorded.');
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `reports/${report.id}`);
+    } catch (err: any) {
+      const info = buildFirestoreErrorInfo(err, OperationType.UPDATE, `reports/${report.id}`);
+      setActionMsg(`Unable to record feedback: ${info.error}`);
     }
   };
 
@@ -68,10 +70,11 @@ export const MyReportsView: React.FC<MyReportsViewProps> = ({ reports, onGoToRep
         </p>
         <button
           type="button"
+          disabled={signingIn}
           onClick={() => signInWithGoogle()}
-          className="px-5 py-2.5 bg-green-900 text-white text-sm font-medium rounded-lg"
+          className="px-5 py-2.5 bg-green-900 text-white text-sm font-medium rounded-lg disabled:opacity-50"
         >
-          Sign In with Google
+          {signingIn ? 'Signing in...' : 'Sign In with Google'}
         </button>
       </div>
     );

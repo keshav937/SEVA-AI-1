@@ -9,7 +9,7 @@ import {
   setDoc,
 } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
-import { OperationType, db, handleFirestoreError } from '../lib/firebase';
+import { OperationType, buildFirestoreErrorInfo, db, handleFirestoreError } from '../lib/firebase';
 import { AwardCandidate, LeaderboardEntry } from '../types/seva';
 
 const REWARD_TIERS = [
@@ -32,7 +32,7 @@ const SPECIAL_BADGES = [
 ];
 
 export const RewardsLeaderboardView: React.FC = () => {
-  const { firebaseUser, profile, signInWithGoogle } = useAuth();
+  const { firebaseUser, profile, signingIn, signInWithGoogle } = useAuth();
 
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [candidates, setCandidates] = useState<AwardCandidate[]>([]);
@@ -55,7 +55,9 @@ export const RewardsLeaderboardView: React.FC = () => {
         list.sort((a, b) => b.points - a.points || b.verifiedReportsCount - a.verifiedReportsCount);
         setEntries(list);
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'leaderboard')
+      (err) => {
+        buildFirestoreErrorInfo(err, OperationType.LIST, 'leaderboard');
+      }
     );
 
     const unsubAwards = onSnapshot(
@@ -144,10 +146,11 @@ export const RewardsLeaderboardView: React.FC = () => {
           </p>
           <button
             type="button"
+            disabled={signingIn}
             onClick={() => signInWithGoogle()}
-            className="px-4 py-2 bg-green-900 text-white text-xs font-medium rounded-lg"
+            className="px-4 py-2 bg-green-900 text-white text-xs font-medium rounded-lg disabled:opacity-50"
           >
-            Sign In with Google
+            {signingIn ? 'Signing in...' : 'Sign In with Google'}
           </button>
         </div>
       ) : (
