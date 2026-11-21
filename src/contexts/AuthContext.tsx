@@ -25,7 +25,7 @@ import {
   handleFirestoreError,
   testFirestoreConnection,
 } from '../lib/firebase';
-import { AuthoritySessionInfo, UserProfile } from '../types/seva';
+import { AuthorityRole, AuthoritySessionInfo, UserProfile } from '../types/seva';
 
 interface AuthContextValue {
   firebaseUser: User | null;
@@ -50,6 +50,9 @@ interface AuthContextValue {
     passcode: string;
     officerEmail?: string;
     officerName?: string;
+    designation?: string;
+    roleChoice?: AuthorityRole;
+    phone?: string;
   }) => Promise<AuthoritySessionInfo>;
   clearAuthoritySession: () => void;
   authError: string | null;

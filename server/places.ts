@@ -194,11 +194,17 @@ const NOMINATIM_TERMS_BY_CATEGORY: Record<NearbyCategoryKey, Array<{ query: stri
   ],
 };
 
+function isStrictHospitalOrPolice(p: { category: string; subcategory: string }): boolean {
+  const sub = p.subcategory.toLowerCase();
+  return sub === 'hospital' || sub === 'police';
+}
+
 async function fetchViaNominatim(params: {
   lat: number;
   lng: number;
   radius: number;
   cats: NearbyCategoryKey[];
+  strictMedicalSafety?: boolean;
 }): Promise<NearbyPlaceResult[]> {
   const seen = new Set<string>();
   const places: NearbyPlaceResult[] = [];
@@ -210,10 +216,15 @@ async function fetchViaNominatim(params: {
   ).toFixed(5)},${(params.lat - latDelta).toFixed(5)}`;
 
   const tasks: Array<{ cat: NearbyCategoryKey; query: string; subcategory: string }> = [];
-  for (const cat of params.cats.slice(0, 4)) {
-    const terms = NOMINATIM_TERMS_BY_CATEGORY[cat] || [{ query: '[amenity=community_centre]', subcategory: 'civic' }];
-    for (const item of terms.slice(0, params.cats.length > 1 ? 1 : 2)) {
-      tasks.push({ cat, query: item.query, subcategory: item.subcategory });
+  if (params.strictMedicalSafety) {
+    tasks.push({ cat: 'healthcare', query: '[amenity=hospital]', subcategory: 'hospital' });
+    tasks.push({ cat: 'public_safety', query: '[amenity=police]', subcategory: 'police' });
+  } else {
+    for (const cat of params.cats.slice(0, 4)) {
+      const terms = NOMINATIM_TERMS_BY_CATEGORY[cat] || [{ query: '[amenity=community_centre]', subcategory: 'civic' }];
+      for (const item of terms.slice(0, params.cats.length > 1 ? 1 : 2)) {
+        tasks.push({ cat, query: item.query, subcategory: item.subcategory });
+      }
     }
   }
 
@@ -221,7 +232,7 @@ async function fetchViaNominatim(params: {
     try {
       const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(
         query
-      )}&viewbox=${viewbox}&bounded=1&limit=15&addressdetails=1`;
+      )}&viewbox=${viewbox}&bounded=1&limit=20&addressdetails=1`;
       const res = await fetch(url, {
         headers: {
           'User-Agent': 'SEVA-AI-SmartCity-Platform/1.0',
@@ -254,6 +265,9 @@ async function fetchViaNominatim(params: {
         if (distanceMeters > params.radius + 500) continue;
 
         const niceSub = (item.type || subcategory).replace(/_/g, ' ');
+        if (params.strictMedicalSafety && !isStrictHospitalOrPolice({ category: cat, subcategory: niceSub })) {
+          continue;
+        }
         const fallbackLabel = niceSub.charAt(0).toUpperCase() + niceSub.slice(1);
         const rawFirstPart = item.display_name?.split(',')[0]?.trim();
         const name = (item.name || rawFirstPart || fallbackLabel).trim();
@@ -287,12 +301,17 @@ export async function fetchNearbyPlaces(params: {
   lng: number;
   radiusMeters: number;
   categories: NearbyCategoryKey[];
+  strictMedicalSafety?: boolean;
 }): Promise<{ places: NearbyPlaceResult[]; provider: string; cached: boolean }> {
   const radius = Math.max(200, Math.min(50000, Math.round(params.radiusMeters)));
-  const cats: NearbyCategoryKey[] =
-    params.categories.length > 0 ? params.categories : ['healthcare', 'public_safety'];
+  const strict = Boolean(params.strictMedicalSafety);
+  const cats: NearbyCategoryKey[] = strict
+    ? ['healthcare', 'public_safety']
+    : params.categories.length > 0
+    ? params.categories
+    : ['healthcare', 'public_safety'];
 
-  const cacheKey = `${params.lat.toFixed(3)}:${params.lng.toFixed(3)}:${radius}:${cats.slice().sort().join(',')}`;
+  const cacheKey = `${params.lat.toFixed(3)}:${params.lng.toFixed(3)}:${radius}:${strict ? 'strict' : cats.slice().sort().join(',')}`;
   const hit = nearbyCache.get(cacheKey);
   if (hit && hit.expiresAt > Date.now()) {
     return { places: hit.places, provider: hit.provider, cached: true };
@@ -305,12 +324,21 @@ export async function fetchNearbyPlaces(params: {
   ).toFixed(5)},${(params.lng + lngDelta).toFixed(5)}`;
 
   const queryClauses: string[] = [];
-  for (const cat of cats) {
-    const pairs = CATEGORY_FILTERS[cat] || [];
-    for (const [k, v] of pairs) {
-      queryClauses.push(`node["${k}"="${v}"];`);
-      if (cats.length <= 2) {
-        queryClauses.push(`way["${k}"="${v}"];`);
+  if (strict) {
+    queryClauses.push('node["amenity"="hospital"];');
+    queryClauses.push('way["amenity"="hospital"];');
+    queryClauses.push('node["healthcare"="hospital"];');
+    queryClauses.push('way["healthcare"="hospital"];');
+    queryClauses.push('node["amenity"="police"];');
+    queryClauses.push('way["amenity"="police"];');
+  } else {
+    for (const cat of cats) {
+      const pairs = CATEGORY_FILTERS[cat] || [];
+      for (const [k, v] of pairs) {
+        queryClauses.push(`node["${k}"="${v}"];`);
+        if (cats.length <= 2) {
+          queryClauses.push(`way["${k}"="${v}"];`);
+        }
       }
     }
   }
@@ -362,8 +390,25 @@ export async function fetchNearbyPlaces(params: {
         const pLng = el.lon ?? el.center?.lon;
         if (typeof pLat !== 'number' || typeof pLng !== 'number') continue;
 
+        let category: NearbyCategoryKey;
+        let subcategory: string;
+        if (strict) {
+          if (tags.amenity === 'police') {
+            category = 'public_safety';
+            subcategory = 'police';
+          } else if (tags.amenity === 'hospital' || tags.healthcare === 'hospital') {
+            category = 'healthcare';
+            subcategory = 'hospital';
+          } else {
+            continue;
+          }
+        } else {
+          const classified = classifyElement(tags, cats);
+          category = classified.category;
+          subcategory = classified.subcategory;
+        }
+
         const name = (tags.name || tags['name:en'] || tags.operator || '').trim();
-        const { category, subcategory } = classifyElement(tags, cats);
         const finalName = name || `${subcategory.charAt(0).toUpperCase() + subcategory.slice(1)}`;
         const dedupKey = `${finalName.toLowerCase()}:${pLat.toFixed(4)}:${pLng.toFixed(4)}`;
         if (seen.has(dedupKey)) continue;
@@ -407,8 +452,13 @@ export async function fetchNearbyPlaces(params: {
     }
   }
 
-  // Fallback to live OpenStreetMap Nominatim bounded search when Overpass mirrors are congested
-  const nomPlaces = await fetchViaNominatim({ lat: params.lat, lng: params.lng, radius, cats });
+  const nomPlaces = await fetchViaNominatim({
+    lat: params.lat,
+    lng: params.lng,
+    radius,
+    cats,
+    strictMedicalSafety: strict,
+  });
   if (nomPlaces.length > 0) {
     nearbyCache.set(cacheKey, {
       expiresAt: Date.now() + 5 * 60 * 1000,
@@ -423,6 +473,39 @@ export async function fetchNearbyPlaces(params: {
   }
 
   throw new Error(lastError);
+}
+
+export async function geocodeLocationQuery(queryText: string): Promise<{
+  lat: number;
+  lng: number;
+  address: string;
+} | null> {
+  const clean = queryText.trim();
+  if (!clean) return null;
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(clean)}&limit=1`;
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'SEVA-AI-SmartCity-Platform/1.0',
+        Accept: 'application/json',
+      },
+      signal: AbortSignal.timeout(7000),
+    });
+    if (!res.ok) return null;
+    const arr = (await res.json()) as Array<{ lat?: string; lon?: string; display_name?: string }>;
+    const first = arr[0];
+    if (!first) return null;
+    const lat = Number(first.lat);
+    const lng = Number(first.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    return {
+      lat,
+      lng,
+      address: first.display_name || clean,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function reverseGeocode(lat: number, lng: number): Promise<{

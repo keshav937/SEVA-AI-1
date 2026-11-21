@@ -131,9 +131,12 @@ export interface ReportAnalysisResult {
   imageMatchesDescription: boolean;
   detectedIssueFromImage: string;
   fraudRiskScore: number;
+  fraudProbability: number;
   fraudRiskLevel: 'Low' | 'Moderate' | 'High' | 'Critical';
   fraudIndicators: string[];
   fraudExplanation: string;
+  evidenceCompleteness: 'Complete' | 'Partial' | 'Minimal';
+  recommendedActionText: string;
   recommendedQueueAction: 'normal_routing' | 'additional_validation' | 'restricted_verification_queue' | 'fraud_investigation_queue';
   qualityNotes: string;
 }
@@ -164,7 +167,8 @@ export async function analyzeCivicReport(params: {
   );
 
   const prompt = `You are SEVA AI & SEVA TRUST (Civic Intelligence & Report Integrity Engine for Indian cities).
-Analyze the following civic report submission objectively. Never fabricate facts or establish guilt.
+Analyze the following civic report submission objectively.
+CRITICAL POLICY: Never automatically accuse a citizen of fraud or establish guilt; high risk scores only flag a report for human authority verification review.
 
 Submitted Data:
 - User Selected Category: ${params.category}
@@ -187,13 +191,15 @@ Tasks:
 2. Suggest the most accurate category and severity.
 3. Recommend the municipal/safety department.
 4. Provide a concise 1-2 sentence operational summary.
-5. Compute a SEVA TRUST fraud risk score (0-100) based on:
+5. Assess evidenceCompleteness ("Complete" if photo + clear location + detailed description, "Partial" if minor piece missing, "Minimal" if sparse).
+6. Compute a SEVA TRUST fraud risk score (0-100) and risk probability (0.0-1.0) based on:
    - Exact duplicate image hash (${duplicateImageFound ? '+45 risk' : '0'})
-   - Repeated identical/near-identical description near same or mismatched GPS
-   - Image vs description mismatch (if image is attached and shows something unrelated like a blank wall, meme, or completely different subject)
-   - Nonsensical/spam/gibberish text or inconsistent location claim
-   - Note: Missing photo alone is NOT fraud (only minor quality note, keep score < 25 if description is genuine).
-6. Classify fraudRiskLevel:
+   - Repeated identical/near-identical description near same GPS
+   - Image vs description mismatch (if photo is attached and clearly depicts something unrelated)
+   - Nonsensical/spam/gibberish text or impossible location claim
+   - Note: Missing photo alone is NOT fraud (note in qualityNotes/evidenceCompleteness, keep score < 25 if description is genuine).
+7. Provide recommendedActionText (concise non-accusatory next step for the reviewing officer, e.g. "Approve and assign PWD unit" or "Flag for manual review and request clearer site photo").
+8. Classify fraudRiskLevel:
    - 0-29: Low -> recommendedQueueAction: "normal_routing"
    - 30-59: Moderate -> recommendedQueueAction: "additional_validation"
    - 60-79: High -> recommendedQueueAction: "restricted_verification_queue"
@@ -229,6 +235,8 @@ Tasks:
           fraudRiskLevel: { type: Type.STRING, enum: ['Low', 'Moderate', 'High', 'Critical'] },
           fraudIndicators: { type: Type.ARRAY, items: { type: Type.STRING } },
           fraudExplanation: { type: Type.STRING },
+          evidenceCompleteness: { type: Type.STRING, enum: ['Complete', 'Partial', 'Minimal'] },
+          recommendedActionText: { type: Type.STRING },
           recommendedQueueAction: {
             type: Type.STRING,
             enum: [
@@ -252,6 +260,8 @@ Tasks:
           'fraudRiskLevel',
           'fraudIndicators',
           'fraudExplanation',
+          'evidenceCompleteness',
+          'recommendedActionText',
           'recommendedQueueAction',
           'qualityNotes',
         ],
@@ -271,6 +281,14 @@ Tasks:
     recommendedDepartment:
       DEPARTMENT_BY_CATEGORY[validCat] || parsed.recommendedDepartment || 'Municipal Corporation',
     fraudRiskScore: clampedScore,
+    fraudProbability: Number((clampedScore / 100).toFixed(2)),
+    evidenceCompleteness:
+      parsed.evidenceCompleteness || (params.photoBase64 ? 'Complete' : 'Partial'),
+    recommendedActionText:
+      parsed.recommendedActionText ||
+      (clampedScore >= 60
+        ? 'Flag for Manual Review and verify evidence before assignment.'
+        : 'Route to department queue for verification and assignment.'),
   };
 }
 
@@ -286,7 +304,19 @@ export interface SaathiAssistantResponse {
     locationMentioned?: string;
     missingFields: string[];
   };
-  navigationTarget?: 'home' | 'explore' | 'report' | 'shield' | 'heatmap' | 'rewards' | 'reports' | 'profile' | 'authority';
+  navigationTarget?:
+    | 'home'
+    | 'explore'
+    | 'report'
+    | 'shield'
+    | 'medical'
+    | 'accident'
+    | 'complaints'
+    | 'heatmap'
+    | 'rewards'
+    | 'reports'
+    | 'profile'
+    | 'authority';
   shouldTriggerSosFlow?: boolean;
 }
 
@@ -300,7 +330,7 @@ export async function processSaathiConversation(params: {
     currentAddress?: string;
     lat?: number;
     lng?: number;
-    myReportsSummary: Array<{ complaintId: string; title: string; category: string; status: string; updatedAt: string }>;
+    myReportsSummary: Array<{ complaintId: string; referenceNumber?: string; title: string; category: string; status: string; updatedAt: string }>;
     authorityStatsSummary?: {
       total: number;
       pending: number;
@@ -330,16 +360,17 @@ CRITICAL HONESTY & GROUNDING RULES:
 1. Respond in ${languageNames[params.language] || 'English'}. Never silently switch to an unrelated language.
 2. Keep spoken replies concise, warm, calm, clear, and helpful (2-4 sentences max so ElevenLabs TTS sounds natural and crisp).
 3. NEVER fabricate complaint IDs, government approvals, authority responses, or claim that an SOS or report has already been submitted if the user hasn't confirmed it in the UI.
-4. For complaint status queries, ONLY cite actual reports from the provided "User's Real Reports" context. If none match or user is not signed in, say so honestly.
+4. For complaint status queries, ONLY cite actual reports from the provided "User's Real Reports" context (referencing their real Complaint ID or Follow-Up Reference Number). If none match or user is not signed in, say so honestly.
 5. For Authority Dashboard briefings, ONLY cite numbers from "Authority Dashboard Real Stats".
 6. Verified SEVA AI platform workflows you can explain accurately:
-   - Potholes / Roads: Open "Report an Issue" -> Roads and Potholes, capture live GPS + optional photo, review AI suggestions, and confirm submission.
-   - Waste Management / Blocked Drains / Traffic / Animal Rescue: Dedicated categories in "Report an Issue" with automatic department routing.
-   - After submission: Report goes through Gemini AI analysis and SEVA TRUST integrity screening, receives a unique Complaint ID, routes to the department, and updates live in "My Reports".
-   - Women & Child Safety / Emergency: "Seva Shield" offers a 2-second hold SOS button (with 5-second cancel countdown), up to 5 trusted Indian phone contacts, live GPS link sharing, and "I'm Safe" resolution. Never claim emergency dispatch occurred automatically from chat; guide or set shouldTriggerSosFlow=true to open the real Seva Shield confirmation workflow.
-   - Explore City: Uses live GPS + OpenStreetMap Overpass API with 500m to 50km radius selection.
-7. If the user is describing a civic problem (pothole, garbage, drain, traffic obstruction, accident, animal rescue, safety concern), set intent="report_issue" and populate extractedReport with category (must match one of: ${CIVIC_CATEGORIES.join(', ')}), concise title, clean description, severity, locationMentioned (only if stated by user; otherwise empty string — NEVER invent a location), and missingFields (e.g. ["location"] if no GPS acquired and no location mentioned, or ["photo_optional", "confirmation"]).
-8. If user asks to open a section (e.g. "open nearby hospitals", "go to safety map", "open my reports"), set intent="navigation" and navigationTarget.`;
+   - Potholes, Waste, Drains, Traffic, Safety, Animal Welfare: Open "Report Issue" (supports both manual form and the guided 5-step "Report an Issue Using Voice" wizard), capture live GPS + optional photo, run AI & Seva Trust verification, and confirm submission.
+   - Follow-Up Tracking & Disputes: "My Reports" supports checking status by Reference Number (via voice or text), uploading requested additional evidence photos, confirming resolution, or disputing/reopening an unresolved issue.
+   - SOS Emergency ("Seva Shield"): Independent module for Women & Personal Safety SOS with 2-second hold button, 5-second countdown, trusted contacts SMS alerting, live GPS share link, and "I'm Safe" resolution.
+   - Medical Assistance ("medical"): Independent section with direct 112/108 helpline calling, strictly filtered nearby hospitals & police stations (1-15 km), live GPS/manual location fallback, and medical responder requests.
+   - Road Accident Help ("accident"): Independent section with direct 112/108 calling, people affected count, photo evidence, caregiver SMS alerts, and nearby trauma hospitals/police.
+   - Citizen Complaint Box ("complaints"): Independent section to file confidential or anonymous complaints against an officer or department (reviewed independently by a Department Supervisor or Admin).
+7. If the user is describing a civic problem, set intent="report_issue" and populate extractedReport with category (must match one of: ${CIVIC_CATEGORIES.join(', ')}), concise title, clean description, severity, locationMentioned (only if stated by user; otherwise empty string — NEVER invent a location), and missingFields.
+8. If user asks to open a section (e.g. "open medical help", "report accident", "open complaint box", "go to safety map", "open my reports"), set intent="navigation" and navigationTarget.`;
 
   const contextBlock = `Current Context:
 - Signed In: ${params.userContext.isSignedIn} (Role: ${params.userContext.role})
@@ -359,7 +390,7 @@ ${contextBlock}
 
 Output JSON schema notes:
 - If intent == "report_issue", fill extractedCategory, extractedTitle, extractedDescription, extractedSeverity, extractedLocation, extractedMissingFields. Otherwise leave them empty strings / empty array.
-- If intent == "navigation", set navigationTarget to one of home, explore, report, shield, heatmap, rewards, reports, profile, authority. Otherwise "home".
+- If intent == "navigation", set navigationTarget to one of home, explore, report, shield, medical, accident, complaints, heatmap, rewards, reports, profile, authority. Otherwise "home".
 - Set shouldTriggerSosFlow true ONLY when citizen explicitly needs SOS workflow opened.`;
 
   const response = await generateWithFallback(ai, (model) => ({
@@ -392,7 +423,7 @@ Output JSON schema notes:
           extractedMissingFields: { type: Type.ARRAY, items: { type: Type.STRING } },
           navigationTarget: {
             type: Type.STRING,
-            enum: ['home', 'explore', 'report', 'shield', 'heatmap', 'rewards', 'reports', 'profile', 'authority'],
+            enum: ['home', 'explore', 'report', 'shield', 'medical', 'accident', 'complaints', 'heatmap', 'rewards', 'reports', 'profile', 'authority'],
           },
           shouldTriggerSosFlow: { type: Type.BOOLEAN },
         },
@@ -579,4 +610,3 @@ export async function transcribeWithGemini(params: {
     languageCode: langCodeMap[params.language || 'auto'] || 'eng',
   };
 }
-
