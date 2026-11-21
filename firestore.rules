@@ -1,0 +1,372 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Primitive Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(uid) {
+      return isVerified() && request.auth.uid == uid;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerified() && request.auth.token.email == 'guptakeshav2178@gmail.com';
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidUserProfileCreate(data, uid) {
+      return data.keys().hasAll(['uid', 'email', 'fullName', 'displayName', 'role', 'points', 'verifiedReportsCount', 'resolvedReportsCount', 'badgeTier', 'badges', 'dpdpConsent', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'fullName', 'displayName', 'phone', 'city', 'ward', 'role', 'department', 'points', 'verifiedReportsCount', 'resolvedReportsCount', 'badgeTier', 'badges', 'dpdpConsent', 'createdAt', 'updatedAt'])
+        && data.uid == uid
+        && data.email is string && data.email.size() <= 200
+        && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 20))
+        && (!('city' in data) || (data.city is string && data.city.size() <= 80))
+        && (!('ward' in data) || (data.ward is string && data.ward.size() <= 80))
+        && data.role == 'citizen'
+        && (!('department' in data) || (data.department is string && data.department.size() <= 80))
+        && data.points is int && data.points == 0
+        && data.verifiedReportsCount is int && data.verifiedReportsCount == 0
+        && data.resolvedReportsCount is int && data.resolvedReportsCount == 0
+        && data.badgeTier is string && data.badgeTier.size() <= 40
+        && data.badges is list && data.badges.size() <= 20
+        && (data.badges.size() == 0 || (data.badges[0] is string && data.badges[0].size() <= 60))
+        && data.dpdpConsent is bool
+        && data.createdAt == request.time
+        && data.updatedAt == request.time;
+    }
+
+    function isValidUserProfileUpdate(data, uid) {
+      return data.keys().hasAll(['uid', 'email', 'fullName', 'displayName', 'role', 'points', 'verifiedReportsCount', 'resolvedReportsCount', 'badgeTier', 'badges', 'dpdpConsent', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'fullName', 'displayName', 'phone', 'city', 'ward', 'role', 'department', 'points', 'verifiedReportsCount', 'resolvedReportsCount', 'badgeTier', 'badges', 'dpdpConsent', 'createdAt', 'updatedAt'])
+        && data.uid == uid
+        && data.email is string && data.email.size() <= 200
+        && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 20))
+        && (!('city' in data) || (data.city is string && data.city.size() <= 80))
+        && (!('ward' in data) || (data.ward is string && data.ward.size() <= 80))
+        && data.role in ['citizen', 'authority', 'admin']
+        && (!('department' in data) || (data.department is string && data.department.size() <= 80))
+        && data.points is int && data.points >= 0 && data.points <= 1000000
+        && data.verifiedReportsCount is int && data.verifiedReportsCount >= 0 && data.verifiedReportsCount <= 100000
+        && data.resolvedReportsCount is int && data.resolvedReportsCount >= 0 && data.resolvedReportsCount <= 100000
+        && data.badgeTier is string && data.badgeTier.size() <= 40
+        && data.badges is list && data.badges.size() <= 20
+        && (data.badges.size() == 0 || (data.badges[0] is string && data.badges[0].size() <= 60))
+        && data.dpdpConsent is bool
+        && data.createdAt == existing().createdAt
+        && data.updatedAt == request.time;
+    }
+
+    function isValidLeaderboardEntry(data, uid) {
+      return data.keys().hasAll(['uid', 'displayName', 'city', 'ward', 'points', 'verifiedReportsCount', 'resolvedReportsCount', 'badgeTier', 'badges', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'city', 'ward', 'points', 'verifiedReportsCount', 'resolvedReportsCount', 'badgeTier', 'badges', 'updatedAt'])
+        && data.uid == uid
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+        && data.city is string && data.city.size() <= 80
+        && data.ward is string && data.ward.size() <= 80
+        && data.points is int && data.points >= 0 && data.points <= 1000000
+        && data.verifiedReportsCount is int && data.verifiedReportsCount >= 0 && data.verifiedReportsCount <= 100000
+        && data.resolvedReportsCount is int && data.resolvedReportsCount >= 0 && data.resolvedReportsCount <= 100000
+        && data.badgeTier is string && data.badgeTier.size() <= 40
+        && data.badges is list && data.badges.size() <= 20
+        && (data.badges.size() == 0 || (data.badges[0] is string && data.badges[0].size() <= 60))
+        && data.updatedAt == request.time;
+    }
+
+    function isValidCivicReport(data) {
+      return data.keys().hasAll(['complaintId', 'reporterUid', 'reporterDisplayName', 'category', 'title', 'description', 'severity', 'status', 'department', 'address', 'lat', 'lng', 'isEmergency', 'isSensitive', 'fraudRiskScore', 'fraudRiskLevel', 'fraudQueueStatus', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['complaintId', 'reporterUid', 'reporterDisplayName', 'category', 'title', 'description', 'severity', 'status', 'department', 'ward', 'locality', 'address', 'lat', 'lng', 'accuracyMeters', 'isEmergency', 'isSensitive', 'photoDataUrl', 'hasVideo', 'videoName', 'aiSummary', 'aiSuggestedCategory', 'aiSuggestedSeverity', 'aiConfidence', 'fraudRiskScore', 'fraudRiskLevel', 'fraudIndicators', 'fraudExplanation', 'fraudQueueStatus', 'assignedOfficer', 'actionNotes', 'resolutionNotes', 'feedbackRating', 'feedbackComment', 'createdAt', 'updatedAt'])
+        && data.complaintId is string && isValidId(data.complaintId) && data.complaintId.size() <= 40
+        && data.reporterUid is string && isValidId(data.reporterUid)
+        && data.reporterDisplayName is string && data.reporterDisplayName.size() >= 1 && data.reporterDisplayName.size() <= 80
+        && data.category is string && data.category.size() >= 2 && data.category.size() <= 80
+        && data.title is string && data.title.size() >= 3 && data.title.size() <= 160
+        && data.description is string && data.description.size() >= 5 && data.description.size() <= 3000
+        && data.severity in ['Low', 'Medium', 'High', 'Critical']
+        && data.status in ['Submitted', 'Authority Acknowledged', 'Assigned', 'In Progress', 'Resolved', 'Rejected']
+        && data.department is string && data.department.size() <= 80
+        && (!('ward' in data) || (data.ward is string && data.ward.size() <= 80))
+        && (!('locality' in data) || (data.locality is string && data.locality.size() <= 120))
+        && data.address is string && data.address.size() <= 300
+        && (data.lat is float || data.lat is int)
+        && (data.lng is float || data.lng is int)
+        && (!('accuracyMeters' in data) || (data.accuracyMeters is float || data.accuracyMeters is int))
+        && data.isEmergency is bool
+        && data.isSensitive is bool
+        && (!('photoDataUrl' in data) || (data.photoDataUrl is string && data.photoDataUrl.size() <= 350000))
+        && (!('hasVideo' in data) || data.hasVideo is bool)
+        && (!('videoName' in data) || (data.videoName is string && data.videoName.size() <= 120))
+        && (!('aiSummary' in data) || (data.aiSummary is string && data.aiSummary.size() <= 600))
+        && (!('aiSuggestedCategory' in data) || (data.aiSuggestedCategory is string && data.aiSuggestedCategory.size() <= 80))
+        && (!('aiSuggestedSeverity' in data) || (data.aiSuggestedSeverity is string && data.aiSuggestedSeverity.size() <= 20))
+        && (!('aiConfidence' in data) || (data.aiConfidence is float || data.aiConfidence is int))
+        && data.fraudRiskScore is int && data.fraudRiskScore >= 0 && data.fraudRiskScore <= 100
+        && data.fraudRiskLevel in ['Low', 'Moderate', 'High', 'Critical']
+        && (!('fraudIndicators' in data) || (data.fraudIndicators is list && data.fraudIndicators.size() <= 15 && (data.fraudIndicators.size() == 0 || (data.fraudIndicators[0] is string && data.fraudIndicators[0].size() <= 160))))
+        && (!('fraudExplanation' in data) || (data.fraudExplanation is string && data.fraudExplanation.size() <= 600))
+        && data.fraudQueueStatus in ['cleared', 'validation_needed', 'restricted_queue', 'investigation_queue', 'rejected']
+        && (!('assignedOfficer' in data) || (data.assignedOfficer is string && data.assignedOfficer.size() <= 120))
+        && (!('actionNotes' in data) || (data.actionNotes is string && data.actionNotes.size() <= 1000))
+        && (!('resolutionNotes' in data) || (data.resolutionNotes is string && data.resolutionNotes.size() <= 1000))
+        && (!('feedbackRating' in data) || (data.feedbackRating is int && data.feedbackRating >= 1 && data.feedbackRating <= 5))
+        && (!('feedbackComment' in data) || (data.feedbackComment is string && data.feedbackComment.size() <= 500));
+    }
+
+    function isValidMilestone(data) {
+      return data.keys().hasAll(['reportId', 'reporterUid', 'step', 'label', 'actorRole', 'createdAt'])
+        && data.keys().hasOnly(['reportId', 'reporterUid', 'step', 'label', 'actorRole', 'note', 'createdAt'])
+        && isValidId(data.reportId)
+        && isValidId(data.reporterUid)
+        && data.step is string && data.step.size() <= 60
+        && data.label is string && data.label.size() <= 120
+        && data.actorRole is string && data.actorRole.size() <= 40
+        && (!('note' in data) || (data.note is string && data.note.size() <= 500))
+        && data.createdAt == request.time;
+    }
+
+    function isValidEmergencyContact(data) {
+      return data.keys().hasAll(['uid', 'name', 'phone', 'relation', 'consentGiven', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'phone', 'relation', 'consentGiven', 'createdAt', 'updatedAt'])
+        && data.uid == request.auth.uid
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && data.phone is string && data.phone.size() >= 10 && data.phone.size() <= 16 && data.phone.matches('^(\\+91)?[6-9][0-9]{9}$')
+        && data.relation is string && data.relation.size() >= 1 && data.relation.size() <= 40
+        && data.consentGiven is bool;
+    }
+
+    function isValidSosEvent(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'status', 'lat', 'lng', 'triggerMethod', 'notifiedContactsCount', 'authorityNotified', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'status', 'lat', 'lng', 'accuracyMeters', 'address', 'triggerMethod', 'notifiedContactsCount', 'authorityNotified', 'deliverySummary', 'trackingSessionId', 'createdAt', 'updatedAt'])
+        && data.uid == request.auth.uid
+        && data.displayName is string && data.displayName.size() <= 80
+        && data.status in ['active', 'safe_resolved', 'cancelled']
+        && (data.lat is float || data.lat is int)
+        && (data.lng is float || data.lng is int)
+        && (!('accuracyMeters' in data) || (data.accuracyMeters is float || data.accuracyMeters is int))
+        && (!('address' in data) || (data.address is string && data.address.size() <= 300))
+        && data.triggerMethod in ['button_hold', 'voice_phrase']
+        && data.notifiedContactsCount is int && data.notifiedContactsCount >= 0 && data.notifiedContactsCount <= 5
+        && data.authorityNotified is bool
+        && (!('deliverySummary' in data) || (data.deliverySummary is string && data.deliverySummary.size() <= 300))
+        && (!('trackingSessionId' in data) || (data.trackingSessionId is string && data.trackingSessionId.size() <= 128));
+    }
+
+    function isValidMedicalRequest(data) {
+      return data.keys().hasAll(['uid', 'trackingId', 'patientCondition', 'severity', 'lat', 'lng', 'address', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'trackingId', 'patientCondition', 'severity', 'lat', 'lng', 'address', 'nearestHospital', 'status', 'createdAt', 'updatedAt'])
+        && data.uid == request.auth.uid
+        && isValidId(data.trackingId) && data.trackingId.size() <= 40
+        && data.patientCondition is string && data.patientCondition.size() >= 3 && data.patientCondition.size() <= 400
+        && data.severity in ['Urgent', 'Critical']
+        && (data.lat is float || data.lat is int)
+        && (data.lng is float || data.lng is int)
+        && data.address is string && data.address.size() <= 300
+        && (!('nearestHospital' in data) || (data.nearestHospital is string && data.nearestHospital.size() <= 200))
+        && data.status in ['Received', 'Authority Notified', 'Acknowledged', 'Assigned', 'On the Way', 'Resolved'];
+    }
+
+    function isValidTrackingSession(data) {
+      return data.keys().hasAll(['uid', 'shareToken', 'status', 'lat', 'lng', 'expiresAt', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'shareToken', 'status', 'lat', 'lng', 'accuracyMeters', 'address', 'expiresAt', 'createdAt', 'updatedAt'])
+        && data.uid == request.auth.uid
+        && isValidId(data.shareToken) && data.shareToken.size() >= 8 && data.shareToken.size() <= 128
+        && data.status in ['active', 'paused', 'stopped', 'revoked']
+        && (data.lat is float || data.lat is int)
+        && (data.lng is float || data.lng is int)
+        && (!('accuracyMeters' in data) || (data.accuracyMeters is float || data.accuracyMeters is int))
+        && (!('address' in data) || (data.address is string && data.address.size() <= 300))
+        && data.expiresAt is string && data.expiresAt.size() <= 60;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['uid', 'type', 'title', 'message', 'read', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'type', 'title', 'message', 'relatedId', 'read', 'createdAt'])
+        && data.uid == request.auth.uid
+        && data.type is string && data.type.size() <= 40
+        && data.title is string && data.title.size() <= 120
+        && data.message is string && data.message.size() <= 500
+        && (!('relatedId' in data) || (data.relatedId is string && data.relatedId.size() <= 128))
+        && data.read is bool;
+    }
+
+    function isValidAwardCandidate(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'city', 'points', 'verifiedReportsCount', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'city', 'ward', 'points', 'verifiedReportsCount', 'status', 'reviewerNote', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.displayName is string && data.displayName.size() <= 80
+        && data.city is string && data.city.size() <= 80
+        && (!('ward' in data) || (data.ward is string && data.ward.size() <= 80))
+        && data.points is int && data.points >= 0 && data.points <= 1000000
+        && data.verifiedReportsCount is int && data.verifiedReportsCount >= 0 && data.verifiedReportsCount <= 100000
+        && data.status in ['nominated', 'verified', 'shortlisted', 'honoree', 'disqualified']
+        && (!('reviewerNote' in data) || (data.reviewerNote is string && data.reviewerNote.size() <= 400));
+    }
+
+    function isValidConsentRecord(data) {
+      return data.keys().hasAll(['uid', 'consentType', 'granted', 'purpose', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'consentType', 'granted', 'purpose', 'createdAt'])
+        && data.uid == request.auth.uid
+        && data.consentType in ['dpdp_account', 'gps_tracking', 'voice_assistant', 'emergency_sharing']
+        && data.granted is bool
+        && data.purpose is string && data.purpose.size() <= 250
+        && data.createdAt == request.time;
+    }
+
+    // 4. Collection Rules
+    match /test/connection {
+      allow get: if true;
+    }
+
+    match /users/{uid} {
+      allow get: if isValidId(uid) && (isOwner(uid) || isBootstrappedAdmin());
+      allow list: if isBootstrappedAdmin();
+      allow create: if isValidId(uid) && isOwner(uid) && isValidUserProfileCreate(incoming(), uid);
+      allow update: if isValidId(uid) && isVerified() && isValidUserProfileUpdate(incoming(), uid) && (
+        isBootstrappedAdmin() ||
+        (isOwner(uid) &&
+          incoming().role == existing().role &&
+          incoming().points == existing().points &&
+          incoming().verifiedReportsCount == existing().verifiedReportsCount &&
+          incoming().resolvedReportsCount == existing().resolvedReportsCount &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'displayName', 'phone', 'city', 'ward', 'dpdpConsent', 'updatedAt'])
+        )
+      );
+      allow delete: if isValidId(uid) && (isOwner(uid) || isBootstrappedAdmin());
+    }
+
+    match /leaderboard/{uid} {
+      allow get: if isValidId(uid) && isSignedIn() && existing().points >= 0;
+      allow list: if isSignedIn() && resource.data.points >= 0;
+      allow create: if isValidId(uid) && isOwner(uid) && isValidLeaderboardEntry(incoming(), uid) && incoming().points == 0 && incoming().verifiedReportsCount == 0 && incoming().resolvedReportsCount == 0 && incoming().updatedAt == request.time;
+      allow update: if isValidId(uid) && isVerified() && isValidLeaderboardEntry(incoming(), uid) && incoming().updatedAt == request.time && (
+        isBootstrappedAdmin() ||
+        (isOwner(uid) &&
+          incoming().points == existing().points &&
+          incoming().verifiedReportsCount == existing().verifiedReportsCount &&
+          incoming().resolvedReportsCount == existing().resolvedReportsCount &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'city', 'ward', 'updatedAt'])
+        )
+      );
+      allow delete: if isValidId(uid) && isBootstrappedAdmin();
+    }
+
+    match /reports/{reportId} {
+      allow get: if isValidId(reportId) && isVerified() && (
+        isBootstrappedAdmin() ||
+        existing().reporterUid == request.auth.uid ||
+        existing().isSensitive == false
+      );
+      allow list: if isVerified() && (
+        isBootstrappedAdmin() ||
+        resource.data.reporterUid == request.auth.uid ||
+        resource.data.isSensitive == false
+      );
+      allow create: if isValidId(reportId) && isVerified()
+        && isValidCivicReport(incoming())
+        && incoming().reporterUid == request.auth.uid
+        && incoming().status == 'Submitted'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(reportId) && isVerified()
+        && isValidCivicReport(incoming())
+        && incoming().reporterUid == existing().reporterUid
+        && incoming().complaintId == existing().complaintId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isBootstrappedAdmin() ||
+          (existing().reporterUid == request.auth.uid && existing().status == 'Resolved' && incoming().diff(existing()).affectedKeys().hasOnly(['feedbackRating', 'feedbackComment', 'updatedAt'])) ||
+          (existing().reporterUid == request.auth.uid && !(existing().status in ['Resolved', 'Rejected']) && incoming().diff(existing()).affectedKeys().hasOnly(['description', 'address', 'photoDataUrl', 'updatedAt']))
+        );
+      allow delete: if isValidId(reportId) && isBootstrappedAdmin();
+    }
+
+    match /reportStatusHistory/{historyId} {
+      allow get: if isValidId(historyId) && isVerified() && (isBootstrappedAdmin() || existing().reporterUid == request.auth.uid);
+      allow list: if isVerified() && (isBootstrappedAdmin() || resource.data.reporterUid == request.auth.uid);
+      allow create: if isValidId(historyId) && isVerified() && isValidMilestone(incoming()) && (isBootstrappedAdmin() || incoming().reporterUid == request.auth.uid);
+      allow update, delete: if false;
+    }
+
+    match /emergencyContacts/{contactId} {
+      allow get: if isValidId(contactId) && isVerified() && (isBootstrappedAdmin() || existing().uid == request.auth.uid);
+      allow list: if isVerified() && (isBootstrappedAdmin() || resource.data.uid == request.auth.uid);
+      allow create: if isValidId(contactId) && isVerified() && isValidEmergencyContact(incoming()) && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isValidId(contactId) && isVerified() && isValidEmergencyContact(incoming()) && existing().uid == request.auth.uid && incoming().createdAt == existing().createdAt && incoming().updatedAt == request.time && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'relation', 'consentGiven', 'updatedAt']);
+      allow delete: if isValidId(contactId) && isVerified() && (isBootstrappedAdmin() || existing().uid == request.auth.uid);
+    }
+
+    match /sosEvents/{sosId} {
+      allow get: if isValidId(sosId) && isVerified() && (isBootstrappedAdmin() || existing().uid == request.auth.uid);
+      allow list: if isVerified() && (isBootstrappedAdmin() || resource.data.uid == request.auth.uid);
+      allow create: if isValidId(sosId) && isVerified() && isValidSosEvent(incoming()) && incoming().status == 'active' && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isValidId(sosId) && isVerified() && isValidSosEvent(incoming()) && existing().uid == request.auth.uid && existing().status == 'active' && incoming().createdAt == existing().createdAt && incoming().updatedAt == request.time && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'lat', 'lng', 'accuracyMeters', 'address', 'deliverySummary', 'updatedAt']);
+      allow delete: if isValidId(sosId) && isBootstrappedAdmin();
+    }
+
+    match /medicalRequests/{requestId} {
+      allow get: if isValidId(requestId) && isVerified() && (isBootstrappedAdmin() || existing().uid == request.auth.uid);
+      allow list: if isVerified() && (isBootstrappedAdmin() || resource.data.uid == request.auth.uid);
+      allow create: if isValidId(requestId) && isVerified() && isValidMedicalRequest(incoming()) && incoming().status in ['Received', 'Authority Notified'] && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isValidId(requestId) && isBootstrappedAdmin() && isValidMedicalRequest(incoming()) && incoming().createdAt == existing().createdAt && incoming().updatedAt == request.time;
+      allow delete: if isValidId(requestId) && isBootstrappedAdmin();
+    }
+
+    match /trackingSessions/{sessionId} {
+      allow get: if isValidId(sessionId) && isVerified() && (isBootstrappedAdmin() || existing().uid == request.auth.uid);
+      allow list: if isVerified() && (isBootstrappedAdmin() || resource.data.uid == request.auth.uid);
+      allow create: if isValidId(sessionId) && isVerified() && isValidTrackingSession(incoming()) && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isValidId(sessionId) && isVerified() && isValidTrackingSession(incoming()) && existing().uid == request.auth.uid && incoming().createdAt == existing().createdAt && incoming().updatedAt == request.time && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'lat', 'lng', 'accuracyMeters', 'address', 'updatedAt']);
+      allow delete: if isValidId(sessionId) && isVerified() && (isBootstrappedAdmin() || existing().uid == request.auth.uid);
+    }
+
+    match /notifications/{notificationId} {
+      allow get: if isValidId(notificationId) && isVerified() && (isBootstrappedAdmin() || existing().uid == request.auth.uid);
+      allow list: if isVerified() && (isBootstrappedAdmin() || resource.data.uid == request.auth.uid);
+      allow create: if isValidId(notificationId) && isVerified() && isValidNotification(incoming()) && incoming().createdAt == request.time;
+      allow update: if isValidId(notificationId) && isVerified() && isValidNotification(incoming()) && existing().uid == request.auth.uid && incoming().createdAt == existing().createdAt && incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+      allow delete: if isValidId(notificationId) && isVerified() && (isBootstrappedAdmin() || existing().uid == request.auth.uid);
+    }
+
+    match /awardCandidates/{candidateId} {
+      allow get: if isValidId(candidateId) && isVerified() && (isBootstrappedAdmin() || existing().uid == request.auth.uid || existing().status in ['shortlisted', 'honoree']);
+      allow list: if isVerified() && (isBootstrappedAdmin() || resource.data.uid == request.auth.uid || resource.data.status in ['shortlisted', 'honoree']);
+      allow create: if isValidId(candidateId) && isVerified() && isValidAwardCandidate(incoming()) && incoming().uid == request.auth.uid && incoming().status == 'nominated' && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isValidId(candidateId) && isBootstrappedAdmin() && isValidAwardCandidate(incoming()) && incoming().createdAt == existing().createdAt && incoming().updatedAt == request.time;
+      allow delete: if isValidId(candidateId) && isBootstrappedAdmin();
+    }
+
+    match /consentRecords/{consentId} {
+      allow get: if isValidId(consentId) && isVerified() && (isBootstrappedAdmin() || existing().uid == request.auth.uid);
+      allow list: if isVerified() && (isBootstrappedAdmin() || resource.data.uid == request.auth.uid);
+      allow create: if isValidId(consentId) && isVerified() && isValidConsentRecord(incoming());
+      allow update, delete: if false;
+    }
+  }
+}

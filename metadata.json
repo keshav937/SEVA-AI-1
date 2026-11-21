@@ -1,0 +1,6 @@
+{
+  "name": "SEVA AI",
+  "description": "Smart City Civic Assistance, Public Safety & ElevenLabs Voice Platform — Your City. Your Voice. Your Safety.",
+  "requestFramePermissions": ["microphone", "geolocation", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

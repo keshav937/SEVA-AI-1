@@ -1,0 +1,272 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private citizen or authority profile with DPDP consent and points summary.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "phone": { "type": "string", "maxLength": 20 },
+        "city": { "type": "string", "maxLength": 80 },
+        "ward": { "type": "string", "maxLength": 80 },
+        "role": { "type": "string", "enum": ["citizen", "authority", "admin"], "maxLength": 20 },
+        "department": { "type": "string", "maxLength": 80 },
+        "points": { "type": "integer" },
+        "verifiedReportsCount": { "type": "integer" },
+        "resolvedReportsCount": { "type": "integer" },
+        "badgeTier": { "type": "string", "maxLength": 40 },
+        "badges": { "type": "array" },
+        "dpdpConsent": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "fullName", "displayName", "role", "points", "verifiedReportsCount", "resolvedReportsCount", "badgeTier", "badges", "dpdpConsent", "createdAt", "updatedAt"]
+    },
+    "LeaderboardEntry": {
+      "title": "LeaderboardEntry",
+      "description": "Privacy-preserving public civic recognition portfolio.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "city": { "type": "string", "maxLength": 80 },
+        "ward": { "type": "string", "maxLength": 80 },
+        "points": { "type": "integer" },
+        "verifiedReportsCount": { "type": "integer" },
+        "resolvedReportsCount": { "type": "integer" },
+        "badgeTier": { "type": "string", "maxLength": 40 },
+        "badges": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "city", "ward", "points", "verifiedReportsCount", "resolvedReportsCount", "badgeTier", "badges", "updatedAt"]
+    },
+    "CivicReport": {
+      "title": "CivicReport",
+      "description": "Citizen civic issue or safety report with AI analysis and Seva Trust fraud assessment.",
+      "type": "object",
+      "properties": {
+        "complaintId": { "type": "string", "minLength": 4, "maxLength": 40, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "reporterUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "reporterDisplayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "category": { "type": "string", "maxLength": 80 },
+        "title": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "description": { "type": "string", "minLength": 5, "maxLength": 3000 },
+        "severity": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"], "maxLength": 20 },
+        "status": { "type": "string", "enum": ["Submitted", "Authority Acknowledged", "Assigned", "In Progress", "Resolved", "Rejected"], "maxLength": 40 },
+        "department": { "type": "string", "maxLength": 80 },
+        "ward": { "type": "string", "maxLength": 80 },
+        "locality": { "type": "string", "maxLength": 120 },
+        "address": { "type": "string", "maxLength": 300 },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "accuracyMeters": { "type": "number" },
+        "isEmergency": { "type": "boolean" },
+        "isSensitive": { "type": "boolean" },
+        "photoDataUrl": { "type": "string", "maxLength": 350000 },
+        "hasVideo": { "type": "boolean" },
+        "videoName": { "type": "string", "maxLength": 120 },
+        "aiSummary": { "type": "string", "maxLength": 600 },
+        "aiSuggestedCategory": { "type": "string", "maxLength": 80 },
+        "aiSuggestedSeverity": { "type": "string", "maxLength": 20 },
+        "aiConfidence": { "type": "number" },
+        "fraudRiskScore": { "type": "integer" },
+        "fraudRiskLevel": { "type": "string", "enum": ["Low", "Moderate", "High", "Critical"], "maxLength": 20 },
+        "fraudIndicators": { "type": "array" },
+        "fraudExplanation": { "type": "string", "maxLength": 600 },
+        "fraudQueueStatus": { "type": "string", "enum": ["cleared", "validation_needed", "restricted_queue", "investigation_queue", "rejected"], "maxLength": 30 },
+        "assignedOfficer": { "type": "string", "maxLength": 120 },
+        "actionNotes": { "type": "string", "maxLength": 1000 },
+        "resolutionNotes": { "type": "string", "maxLength": 1000 },
+        "feedbackRating": { "type": "integer" },
+        "feedbackComment": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["complaintId", "reporterUid", "reporterDisplayName", "category", "title", "description", "severity", "status", "department", "address", "lat", "lng", "isEmergency", "isSensitive", "fraudRiskScore", "fraudRiskLevel", "fraudQueueStatus", "createdAt", "updatedAt"]
+    },
+    "ReportStatusMilestone": {
+      "title": "ReportStatusMilestone",
+      "description": "Audit milestone in a civic complaint tracking timeline.",
+      "type": "object",
+      "properties": {
+        "reportId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "reporterUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "step": { "type": "string", "maxLength": 60 },
+        "label": { "type": "string", "maxLength": 120 },
+        "actorRole": { "type": "string", "maxLength": 40 },
+        "note": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["reportId", "reporterUid", "step", "label", "actorRole", "createdAt"]
+    },
+    "EmergencyContact": {
+      "title": "EmergencyContact",
+      "description": "Private trusted emergency contact for Seva Shield SOS.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "phone": { "type": "string", "minLength": 10, "maxLength": 16, "pattern": "^(\\+91)?[6-9][0-9]{9}$" },
+        "relation": { "type": "string", "maxLength": 40 },
+        "consentGiven": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "phone", "relation", "consentGiven", "createdAt", "updatedAt"]
+    },
+    "SosEvent": {
+      "title": "SosEvent",
+      "description": "Seva Shield emergency SOS activation and resolution record.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "maxLength": 80 },
+        "status": { "type": "string", "enum": ["active", "safe_resolved", "cancelled"], "maxLength": 30 },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "accuracyMeters": { "type": "number" },
+        "address": { "type": "string", "maxLength": 300 },
+        "triggerMethod": { "type": "string", "enum": ["button_hold", "voice_phrase"], "maxLength": 30 },
+        "notifiedContactsCount": { "type": "integer" },
+        "authorityNotified": { "type": "boolean" },
+        "deliverySummary": { "type": "string", "maxLength": 300 },
+        "trackingSessionId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "status", "lat", "lng", "triggerMethod", "notifiedContactsCount", "authorityNotified", "createdAt", "updatedAt"]
+    },
+    "MedicalRequest": {
+      "title": "MedicalRequest",
+      "description": "Emergency medical or ambulance assistance request.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "trackingId": { "type": "string", "minLength": 4, "maxLength": 40, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "patientCondition": { "type": "string", "minLength": 3, "maxLength": 400 },
+        "severity": { "type": "string", "enum": ["Urgent", "Critical"], "maxLength": 20 },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "address": { "type": "string", "maxLength": 300 },
+        "nearestHospital": { "type": "string", "maxLength": 200 },
+        "status": { "type": "string", "enum": ["Received", "Authority Notified", "Acknowledged", "Assigned", "On the Way", "Resolved"], "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "trackingId", "patientCondition", "severity", "lat", "lng", "address", "status", "createdAt", "updatedAt"]
+    },
+    "TrackingSession": {
+      "title": "TrackingSession",
+      "description": "User live GPS location tracking and temporary revocable share session.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "shareToken": { "type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "status": { "type": "string", "enum": ["active", "paused", "stopped", "revoked"], "maxLength": 20 },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "accuracyMeters": { "type": "number" },
+        "address": { "type": "string", "maxLength": 300 },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "shareToken", "status", "lat", "lng", "expiresAt", "createdAt", "updatedAt"]
+    },
+    "UserNotification": {
+      "title": "UserNotification",
+      "description": "In-app notification for citizen or authority updates.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "type": { "type": "string", "maxLength": 40 },
+        "title": { "type": "string", "maxLength": 120 },
+        "message": { "type": "string", "maxLength": 500 },
+        "relatedId": { "type": "string", "maxLength": 128 },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "type", "title", "message", "read", "createdAt"]
+    },
+    "AwardCandidate": {
+      "title": "AwardCandidate",
+      "description": "Proposed State Civic Excellence Honours nomination record.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "maxLength": 80 },
+        "city": { "type": "string", "maxLength": 80 },
+        "ward": { "type": "string", "maxLength": 80 },
+        "points": { "type": "integer" },
+        "verifiedReportsCount": { "type": "integer" },
+        "status": { "type": "string", "enum": ["nominated", "verified", "shortlisted", "honoree", "disqualified"], "maxLength": 30 },
+        "reviewerNote": { "type": "string", "maxLength": 400 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "city", "points", "verifiedReportsCount", "status", "createdAt", "updatedAt"]
+    },
+    "ConsentRecord": {
+      "title": "ConsentRecord",
+      "description": "DPDP consent audit record for GPS, voice processing, and emergency sharing.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "consentType": { "type": "string", "enum": ["dpdp_account", "gps_tracking", "voice_assistant", "emergency_sharing"], "maxLength": 40 },
+        "granted": { "type": "boolean" },
+        "purpose": { "type": "string", "maxLength": 250 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "consentType", "granted", "purpose", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user profiles and PII; owner or bootstrapped admin only."
+    },
+    "/leaderboard/{uid}": {
+      "schema": { "$ref": "#/entities/LeaderboardEntry" },
+      "description": "Privacy-preserving civic champion rankings."
+    },
+    "/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/CivicReport" },
+      "description": "Civic issue reports, AI analysis, and Seva Trust fraud assessments."
+    },
+    "/reportStatusHistory/{historyId}": {
+      "schema": { "$ref": "#/entities/ReportStatusMilestone" },
+      "description": "Timeline milestones for citizen complaint tracking."
+    },
+    "/emergencyContacts/{contactId}": {
+      "schema": { "$ref": "#/entities/EmergencyContact" },
+      "description": "Trusted contacts for Seva Shield SOS (strictly private)."
+    },
+    "/sosEvents/{sosId}": {
+      "schema": { "$ref": "#/entities/SosEvent" },
+      "description": "Seva Shield SOS activations and safe resolutions."
+    },
+    "/medicalRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/MedicalRequest" },
+      "description": "Medical emergency and ambulance requests."
+    },
+    "/trackingSessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/TrackingSession" },
+      "description": "Live GPS location sharing sessions."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/UserNotification" },
+      "description": "Citizen and authority notifications."
+    },
+    "/awardCandidates/{candidateId}": {
+      "schema": { "$ref": "#/entities/AwardCandidate" },
+      "description": "State Civic Excellence Honours nomination portfolio."
+    },
+    "/consentRecords/{consentId}": {
+      "schema": { "$ref": "#/entities/ConsentRecord" },
+      "description": "DPDP consent audit log."
+    }
+  }
+}

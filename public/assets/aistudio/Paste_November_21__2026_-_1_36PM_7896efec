@@ -1,0 +1,1434 @@
+# SEVA AI — THE SMART CITY INTELLIGENCE, CIVIC SERVICES & PUBLIC SAFETY ECOSYSTEM
+
+**Tagline: One City. One Platform. Infinite Possibilities. A Safer Tomorrow.**
+
+**Project:** SEVA AI  
+**Hackathon:** Seva First Innovation Challenge 2026  
+**Category:** AI-Powered Smart City & Civic Technology  
+**Mandatory Technologies:** ElevenLabs + Render
+
+---
+
+# MASTER DEVELOPMENT INSTRUCTION
+
+Act as an elite team of senior full-stack developers, AI engineers, UI/UX designers, geospatial engineers, cybersecurity specialists and product architects.
+
+Build a complete, modern, elegant, production-oriented, full-stack web application called SEVA AI.
+
+This is an existing project concept with an established feature set. Implement all the features described below as one connected application.
+
+**IMPORTANT: I DO NOT WANT A BASIC TEMPLATE, STATIC WEBSITE, UI-ONLY MOCKUP OR PRESENTATION.**
+
+I want a fully functional application with:
+- Real backend.
+- Real database.
+- Actual GPS location sensing.
+- Real-time location tracking.
+- Real nearby-place discovery.
+- Functional AI report analysis.
+- Fraudulent report detection.
+- Functional authority dashboard.
+- Real complaint tracking.
+- Working leaderboard and reward system.
+- Real ElevenLabs voice integration.
+- Live deployment through Render.
+
+Every button, navigation item, form, filter, dashboard, map and interaction must work.
+
+Do not create fake data, fake API responses, simulated GPS movement or fake successful submissions.
+
+## PART 1 — PRODUCT VISION AND IDENTITY
+
+SEVA AI is an AI-powered smart city civic assistance and public safety platform designed for Indian cities.
+
+It connects:
+- Citizens.
+- Municipal authorities.
+- Police departments.
+- Hospitals.
+- Emergency services.
+- Educational institutions.
+- Other public service providers.
+
+The core workflow:
+
+CITIZEN → REPORT → AI ANALYSIS → FRAUD CHECK → GPS LOCATION → AUTHORITY ROUTING → TRACKING → RESOLUTION → CITIZEN REWARDS.
+
+The platform should look and operate like a professional government-supported digital civic services ecosystem.
+
+Use the following positioning:
+
+**Your City. Your Voice. Your Safety.**
+
+Do not use DTU-specific branding or restrict the platform to one institution. It must be suitable for deployment across Indian cities and states.
+
+## PART 2 — SIMPLE, PREMIUM AND ELEGANT UI/UX
+
+This is one of the highest-priority requirements.
+
+I want a beautiful, extremely user-friendly interface that even a first-time smartphone user can understand.
+
+### Design language
+
+Use a premium government digital services aesthetic.
+
+Color palette:
+- Primary: Deep forest green.
+- Secondary: Emerald green.
+- Background: Clean white.
+- Cards: Very light neutral grey.
+- Accent: Warm amber.
+- Emergency: Clear red.
+- Text: Dark charcoal.
+
+### Design requirements
+
+- Minimalist layouts.
+- Beautiful typography.
+- Consistent spacing.
+- Elegant icons.
+- Rounded cards.
+- Soft shadows.
+- Smooth transitions.
+- Clear navigation.
+- Accessible contrast.
+- Large touch-friendly buttons.
+- Attractive maps and data visualizations.
+
+Avoid:
+- Overcrowded dashboards.
+- Excessive gradients.
+- Neon colors.
+- Unnecessary animations.
+- Childish illustrations.
+- Too many cards.
+- Repeated information.
+- Complicated navigation.
+
+The website must be completely responsive on Android, iPhone, tablet and desktop.
+
+### Main navigation
+
+Create a simple navigation system:
+
+1. Home
+2. Explore City
+3. Report an Issue
+4. Seva Shield
+5. City Safety Map
+6. Rewards & Leaderboard
+7. My Reports
+8. Profile
+
+Show an Authority Portal entry point for authorized accounts.
+
+Keep the main citizen dashboard clean and avoid duplicate modules.
+
+## PART 3 — AUTHENTICATION AND USER ROLES
+
+Create two account types:
+
+**1. Citizen**
+
+**2. Authority**
+
+Citizen registration:
+- Full name.
+- Email.
+- Mobile number.
+- Password.
+- Confirm password.
+- Phone OTP.
+- Email verification.
+- Profile photograph.
+
+Citizen login:
+- Email and password.
+- Phone and OTP.
+- Forgot password.
+- Password reset.
+- Secure logout.
+
+### Authority login — IMPORTANT CHANGE
+
+Remove the admin approval waiting screen completely.
+
+An authorized authority employee must be able to register or sign in and access their assigned Authority Dashboard directly after successful authentication.
+
+There must be:
+- No manual admin approval queue.
+- No waiting-for-approval screen.
+- No unnecessary account activation delay.
+
+However, authority privileges must be protected.
+
+Use verified official credentials, department-issued access codes, verified official email or secure invitation-based registration. Never grant authority access simply because someone selects Authority during registration.
+
+Once verified, directly open the Authority Dashboard.
+
+Support department-specific permissions:
+- Municipal Corporation.
+- Public Works Department.
+- Traffic Police.
+- Police Department.
+- Emergency Control Room.
+- Medical Services.
+- Other configured departments.
+
+An authority employee should see all civic reports relevant to their assigned jurisdiction and department.
+
+## PART 4 — CITIZEN DASHBOARD
+
+Create a personalized citizen dashboard.
+
+Display:
+- Welcome message.
+- User profile.
+- Current location status.
+- Quick reporting shortcuts.
+- My Reports.
+- Nearby Places.
+- Seva Shield.
+- Medical Assistance.
+- Accident Reporting.
+- City Safety Map.
+- Rewards and Badges.
+- Leaderboard.
+- Notifications.
+
+Use simple cards and a clean layout.
+
+All dashboard information must come from the authenticated user's actual account and database records.
+
+## PART 5 — COMPLETE CIVIC ISSUE REPORTING SYSTEM
+
+Create a complete civic reporting system.
+
+Categories:
+
+1. Roads and Potholes.
+2. Waste Management.
+3. Blocked Drains and Waterlogging.
+4. Traffic and Road Obstructions.
+5. Road Accident Reporting.
+6. Medical Assistance.
+7. Women and Child Safety.
+8. Animal Rescue and Welfare.
+
+Every category must have its own dedicated Report New Issue button.
+
+### Reporting form
+
+Include:
+- Issue category.
+- Incident title.
+- Description.
+- Severity.
+- Current GPS location.
+- Address.
+- Photograph.
+- Video evidence.
+- Date and time.
+- Contact information.
+
+Allow:
+- Camera capture.
+- Gallery upload.
+- Image preview.
+- Video recording where supported.
+- Video upload.
+- Location selection on map.
+- Manual address correction.
+
+### Smart reporting workflow
+
+Citizen selects a category.
+
+The website obtains the actual location with permission.
+
+The citizen uploads evidence and describes the problem.
+
+The AI analyzes the report.
+
+The fraud detection engine checks suspicious patterns.
+
+The system suggests the category, severity and description.
+
+The citizen reviews and confirms.
+
+The report is saved in the database.
+
+A unique complaint ID is generated.
+
+The report is routed to the correct authority.
+
+The citizen receives confirmation and can track the report.
+
+Never submit a report without the user's confirmation.
+
+## PART 6 — AI CIVIC REPORT ANALYSIS ENGINE
+
+Build a powerful AI analysis system.
+
+When a citizen submits a report, analyze:
+
+- Description.
+- Uploaded photographs.
+- Uploaded video where supported.
+- Issue category.
+- Location.
+- Severity.
+- Duplicate reports.
+- Evidence consistency.
+
+### AI capabilities
+
+1. Image-based issue recognition.
+2. Automatic category suggestion.
+3. Description understanding.
+4. Severity assessment.
+5. Duplicate incident detection.
+6. Incident summarization.
+7. Department recommendation.
+8. Location-based incident grouping.
+9. Fraud risk scoring.
+10. Report quality assessment.
+
+Example:
+
+A citizen uploads a pothole photograph.
+
+The AI:
+- Identifies a possible pothole.
+- Suggests Roads and Potholes.
+- Analyzes the description.
+- Recommends a severity level.
+- Checks for similar nearby reports.
+- Suggests a department.
+- Prepares a report summary.
+
+The citizen reviews the suggestions before submitting.
+
+AI must not independently establish guilt, verify criminal allegations or make final enforcement decisions.
+
+If AI services fail, manual reporting must continue working.
+
+## PART 7 — ADVANCED FRAUDULENT REPORT DETECTION
+
+Build a dedicated feature called:
+
+**SEVA TRUST — AI-Powered Report Integrity & Fraud Detection.**
+
+This should be one of SEVA AI's major differentiating features.
+
+The system must identify suspicious, misleading, duplicate or potentially fraudulent civic reports.
+
+### Fraud detection checks
+
+1. Duplicate photographs.
+2. Repeated identical descriptions.
+3. Suspiciously repetitive submissions.
+4. Reused media across different locations.
+5. Inconsistent GPS and address information.
+6. Image and description mismatch.
+7. Unusual reporting patterns.
+8. Repeated false submissions established through verified review history.
+9. Manipulated or invalid evidence where technically detectable.
+
+### AI fraud risk score
+
+Create a risk score from 0–100.
+
+Suggested interpretation:
+- 0–29: Low risk.
+- 30–59: Moderate risk.
+- 60–79: High risk.
+- 80–100: Critical risk.
+
+Show:
+- Risk score.
+- Suspicious indicators.
+- Duplicate similarity.
+- AI explanation.
+- Recommended action.
+
+### MOST IMPORTANT WORKFLOW
+
+Low-risk reports:
+- Continue to the normal authority workflow.
+
+Moderate-risk reports:
+- Receive additional validation.
+- May request further evidence.
+
+High-risk reports:
+- Temporarily enter a restricted verification queue.
+- Do not enter the normal operational authority complaint queue until reviewed.
+
+Critical-risk reports:
+- Enter a dedicated fraud investigation queue.
+- Require documented human review before rejection.
+
+Create a separate Fraud Review section for authorized fraud-review personnel.
+
+Do not permanently delete reports just because AI suspects fraud.
+
+Do not automatically reject reports based only on AI predictions.
+
+**Emergency exception:** Never allow a fraud score alone to block a genuine emergency SOS, medical emergency or urgent safety report. Emergency reports must be routed immediately, with fraud analysis running separately.
+
+Keep a complete fraud decision audit trail.
+
+## PART 8 — REAL-TIME GPS LOCATION ENGINE
+
+This is one of the most important technical features.
+
+Implement genuine live location sensing using the browser Geolocation API.
+
+Use:
+
+`navigator.geolocation.getCurrentPosition()`
+
+and
+
+`navigator.geolocation.watchPosition()`
+
+Do not use:
+- Hardcoded coordinates.
+- Random coordinates.
+- Simulated moving markers.
+- Fake live location.
+- Fixed sample locations.
+
+### Location functionality
+
+When a citizen opens the location feature:
+
+1. Request location permission.
+2. Obtain actual device coordinates.
+3. Show current latitude and longitude.
+4. Display location accuracy in meters.
+5. Convert coordinates into a readable address.
+6. Show the user's actual location on the map.
+7. Update location when the user moves.
+8. Show the last updated timestamp.
+
+Display clear states:
+- Requesting permission.
+- Finding location.
+- Location acquired.
+- Improving accuracy.
+- Weak GPS.
+- Permission denied.
+- GPS unavailable.
+- Network disconnected.
+
+Use high accuracy when available and configure reasonable timeout and update intervals.
+
+Do not display false precision.
+
+Allow the user to manually select a location if GPS is unavailable.
+
+### LIVE LOCATION TRACKING
+
+Create a dedicated Live Location Tracking module.
+
+Features:
+- Start Tracking.
+- Pause Tracking.
+- Resume Tracking.
+- Stop Tracking.
+- Share Location.
+- Revoke Location Sharing.
+- View Tracking History.
+
+During an active tracking session:
+- Capture actual coordinates.
+- Update location approximately every 3–5 seconds when device and browser conditions permit.
+- Send updates to the backend.
+- Display a moving marker on the map.
+- Show actual location accuracy.
+- Show last updated time.
+- Maintain a secure location history.
+- Provide a clear tracking status.
+
+Use WebSockets or an equivalent real-time connection.
+
+### Secure tracking link
+
+Allow citizens to share a temporary tracking link with selected family members or trusted contacts.
+
+The recipient should be able to see:
+- Current location.
+- Moving map marker.
+- Last updated time.
+- Accuracy.
+- Tracking status.
+
+Require explicit consent before sharing.
+
+Tracking links must be:
+- Unpredictable.
+- Time-limited.
+- Revocable.
+- Access-controlled.
+
+When tracking stops, stop sending location updates.
+
+IMPORTANT: Browser-based GPS cannot guarantee uninterrupted tracking when a browser is closed, the phone is locked, or the operating system suspends the application. Display this limitation honestly. Do not simulate tracking in these situations.
+
+## PART 9 — EXPLORE CITY: UNIVERSAL NEARBY PLACES DISCOVERY
+
+Build a beautiful, comprehensive module called:
+
+**EXPLORE MY CITY — Everything Around You.**
+
+This should be one of the most useful features of SEVA AI.
+
+It must retrieve real nearby places based on the user's current GPS coordinates.
+
+Do not display generic static lists.
+
+### Nearby categories
+
+Include:
+
+**Healthcare**
+- Hospitals.
+- Clinics.
+- Medical stores.
+- Pharmacies.
+- Diagnostic centres.
+- Ambulance providers where listed.
+
+**Public Safety**
+- Police stations.
+- Police assistance centres.
+- Fire stations.
+- Emergency facilities.
+
+**Education**
+- Schools.
+- Colleges.
+- Universities.
+- Coaching centres.
+- Libraries.
+
+**Food and Restaurants**
+- Restaurants.
+- Cafes.
+- Food courts.
+- Hotels.
+- Bakeries.
+
+**Public Places**
+- Parks.
+- Gardens.
+- Playgrounds.
+- Public toilets.
+- Community centres.
+- Public libraries.
+
+**Transport**
+- Metro stations.
+- Bus stops.
+- Railway stations.
+- Airports.
+- Taxi stands.
+- Parking areas.
+
+**Shopping**
+- Shopping malls.
+- Grocery stores.
+- Supermarkets.
+- Local markets.
+- Shopping complexes.
+
+**Government Services**
+- Municipal offices.
+- Government offices.
+- Post offices.
+- Courts.
+- Public service centres.
+
+**Other**
+- Banks.
+- ATMs.
+- Petrol pumps.
+- Religious places.
+- Sports facilities.
+- Tourist attractions.
+
+Make the category architecture expandable.
+
+### Radius setting option
+
+Provide an interactive radius selector.
+
+Options:
+- 500 metres.
+- 1 kilometre.
+- 2 kilometres.
+- 5 kilometres.
+- 10 kilometres.
+- 20 kilometres.
+- 50 kilometres.
+
+Also provide a custom radius option where supported.
+
+When the radius changes:
+- Fetch actual places within the selected radius.
+- Refresh the map.
+- Update the result count.
+- Recalculate distances.
+- Update the nearby-place list.
+
+The radius must be measured from the user's actual current coordinates, not the city centre.
+
+### Nearby place cards
+
+Every place should display available information:
+
+- Actual name.
+- Category.
+- Address.
+- Distance from current location.
+- Phone number where available.
+- Opening hours where available.
+- Rating where supplied by the data provider.
+- Open/closed information only when reliable provider data exists.
+- Directions.
+- View on map.
+
+### Map functionality
+
+Show:
+- Actual current user location.
+- All retrieved nearby places.
+- Category-based markers.
+- Marker information windows.
+- Zoom controls.
+- Map navigation.
+- Distance information.
+
+Provide category filters so users can select multiple categories.
+
+Example:
+
+A user selects 5 km and Hospitals, Parks and Restaurants.
+
+The map should display only actual retrieved results matching those filters and radius.
+
+### Data sources
+
+Use a genuine places provider.
+
+Preferred architecture:
+- Google Places API for comprehensive place discovery, or
+- OpenStreetMap Overpass API with appropriate geocoding and routing services.
+
+Use a reliable provider fallback where possible.
+
+Do not fabricate phone numbers, addresses, ratings or places.
+
+Handle:
+- Empty results.
+- Provider rate limits.
+- API failures.
+- GPS denial.
+- Incomplete place information.
+
+Use pagination, caching and appropriate request limits.
+
+## PART 10 — SEVA SHIELD: WOMEN AND CHILD SAFETY
+
+Create a premium safety module called:
+
+**SEVA SHIELD — Your Personal Safety Companion.**
+
+Features:
+- SOS emergency button.
+- Emergency contacts.
+- Live location sharing.
+- Voice protection.
+- Nearby police stations.
+- Safety status.
+- Emergency history.
+
+### SOS
+
+Create a large, easily accessible red SOS button.
+
+Workflow:
+1. Press and hold for two seconds.
+2. Start a five-second countdown.
+3. Display Cancel.
+4. Activate only if not cancelled.
+5. Capture current GPS.
+6. Start location sharing.
+7. Notify configured emergency contacts.
+8. Send an alert to the configured receiving authority.
+9. Display actual delivery statuses.
+
+Use genuine backend notification services.
+
+### Emergency contacts
+
+Allow up to five contacts.
+
+Provide:
+- Add contact.
+- Edit contact.
+- Delete contact.
+- Validate Indian phone numbers.
+- Prevent duplicate contacts.
+
+Obtain consent before sharing their location.
+
+### I'm Safe
+
+Provide a prominent I'm Safe button.
+
+When selected:
+- Stop location sharing.
+- Stop active alarm.
+- Update emergency status.
+- Notify contacts.
+- Record resolution time.
+
+Do not claim an emergency service has been dispatched without confirmation.
+
+## PART 11 — MEDICAL AND ACCIDENT ASSISTANCE
+
+Create separate dedicated modules for:
+
+**Medical Assistance**
+- Medical emergency report.
+- GPS location.
+- Nearby hospital discovery.
+- Nearby ambulance provider discovery.
+- Incident details.
+- Emergency request.
+- Tracking ID.
+- Response status.
+
+**Accident Reporting**
+- Accident details.
+- GPS location.
+- Photo and video evidence.
+- Nearby hospitals.
+- Nearby police stations.
+- Authority notification.
+- Complaint tracking.
+
+Display actual status:
+- Received.
+- Authority Notified.
+- Acknowledged.
+- Assigned.
+- On the Way.
+- Resolved.
+
+Only show actual confirmed statuses.
+
+## PART 12 — CITY SAFETY HEATMAP
+
+Create a dedicated module:
+
+**CITY SAFETY INTELLIGENCE — Crime & Public Safety Heatmap.**
+
+This should be an interactive map based on real, approved and sufficiently aggregated incident data.
+
+### Data sources
+
+- Verified crime reports.
+- Approved harassment reports.
+- Verified unsafe-location reports.
+- Approved public safety incidents.
+- Relevant time and location patterns.
+
+### Heatmap functionality
+
+Display:
+- Low reported incident density.
+- Moderate reported incident density.
+- High reported incident density.
+
+Provide filters:
+- Incident category.
+- Date range.
+- Time of day.
+- Day/night.
+- Ward.
+- Locality.
+- Incident severity.
+
+### Risk intelligence
+
+Calculate area-level risk using:
+- Incident severity.
+- Number of verified reports.
+- Recency.
+- Geographic density.
+- Verification confidence.
+
+Use geographic clustering.
+
+### Important requirements
+
+- Use actual approved data.
+- Refresh when new approved records are available.
+- Show the last updated timestamp.
+- Never reveal reporter identities.
+- Suppress areas with insufficient data.
+- Avoid displaying exact sensitive incident addresses.
+- Clearly label risk as reported incident density, not a definitive prediction of danger.
+
+Add a map legend and interactive area information.
+
+## PART 13 — CITIZEN REWARDS AND RECOGNITION SYSTEM
+
+Create an exceptional reward system called:
+
+**SEVA SAMMAN — India's Civic Champion Recognition Programme.**
+
+The purpose is to motivate citizens to contribute positively to their cities.
+
+This should feel like an official civic recognition programme rather than an ordinary gaming points system.
+
+### Reward levels
+
+**Bronze Citizen**
+- First verified report.
+
+**Silver Citizen**
+- 10 verified reports.
+
+**Gold Citizen**
+- 25 verified reports.
+
+**Platinum Guardian**
+- 50 verified reports.
+
+**City Champion**
+- Top verified citizen contributors.
+
+Use configurable thresholds.
+
+### Special badges
+
+- First Report.
+- Clean City Champion.
+- Road Safety Guardian.
+- Public Health Protector.
+- Animal Welfare Champion.
+- Safety Hero.
+- Consistent Citizen.
+- Emergency Response Contributor.
+
+### Points
+
+Award configurable points for:
+- Verified civic reports.
+- Useful photo/video evidence.
+- Accurate location information.
+- Reports contributing to confirmed resolution.
+- Helpful public safety contributions.
+
+Use:
+- Daily limits.
+- Duplicate detection.
+- Fraud prevention.
+- Verification-based points.
+- Complete points history.
+
+Never reward fake, rejected or duplicate reports.
+
+### Leaderboard
+
+Create an attractive leaderboard with:
+
+- Top 10.
+- Top 20.
+- This Month.
+- This Year.
+- All Time.
+- City Ranking.
+- Ward Ranking.
+
+Display:
+- Rank.
+- Citizen name or chosen display name.
+- Badge.
+- Points.
+- Verified reports.
+- Resolved reports.
+
+Allow citizens to choose privacy-preserving display names.
+
+Make rankings dynamic using actual database calculations.
+
+### STATE-LEVEL CIVIC RECOGNITION
+
+Create a prestigious recognition initiative:
+
+**STATE CIVIC EXCELLENCE HONOURS**
+
+The vision is that the highest-performing citizens may receive recognition from relevant government authorities.
+
+Potential recognition:
+- Chief Minister's Civic Excellence Recognition.
+- Lieutenant Governor's Civic Contribution Recognition.
+- State-level certificates.
+- Official felicitation ceremonies.
+- Annual Civic Champion Awards.
+- Recognition at municipal or state-level events.
+
+### Implementation requirements
+
+Create:
+- Top 10 State Citizens.
+- Top 20 State Citizens.
+- Annual award shortlist.
+- Verified contribution portfolio.
+- Eligibility checking.
+- Award nomination.
+- Authority verification.
+- Winner announcement.
+- Digital certificate.
+- Hall of Fame.
+
+Create an award management panel in the Authority Portal.
+
+Allow authorized programme administrators to:
+- Review candidates.
+- Verify contribution history.
+- Disqualify fraudulent entries with documented reasons.
+- Finalize winners.
+- Publish results.
+
+IMPORTANT: Do not falsely claim that the CM, Lieutenant Governor or any government department has approved or promised these awards. Present these as a proposed official recognition programme until a real government partnership and authorization exist.
+
+Make the system ready for an official government partnership.
+
+## PART 14 — ELEVENLABS AI VOICE INTEGRATION
+
+Create a complete voice-first assistance system called:
+
+**SEVA SAATHI — Your Voice, Your City, Your Seva.**
+
+Integrate the actual ElevenLabs API.
+
+Capabilities:
+- Speech-to-text.
+- Text-to-speech.
+- Natural AI conversations.
+- Voice-based civic reporting.
+- Spoken complaint updates.
+- Voice-guided navigation.
+- Multilingual interaction.
+
+Prioritize:
+- English.
+- Hindi.
+- Bengali.
+- Assamese.
+
+Add language support according to actual ElevenLabs model and voice capabilities.
+
+### Voice reporting
+
+Example:
+
+Citizen: "There is a large pothole near my locality."
+
+SEVA SAATHI:
+"I can help you report this road issue. Please confirm your location."
+
+The assistant transcribes the request, identifies the issue, populates the existing reporting form and asks the user to confirm before submitting.
+
+### Technical requirements
+
+- Store ELEVENLABS_API_KEY on the backend.
+- Never expose API keys in frontend code.
+- Use actual supported endpoints and model IDs.
+- Implement audio playback controls.
+- Implement microphone permissions.
+- Display transcription.
+- Display listening, processing and speaking states.
+- Handle API failures.
+- Provide text alternatives.
+
+Connect voice reporting to the same existing complaint database.
+
+Do not build a disconnected chatbot.
+
+## PART 15 — AUTHORITY DASHBOARD
+
+Create a powerful, professional government-style Authority Dashboard.
+
+This must be a real operational portal.
+
+### Dashboard overview
+
+Display real-time database statistics:
+
+- Total reports.
+- New reports.
+- Pending reports.
+- Assigned reports.
+- Resolved reports.
+- Rejected reports.
+- High-priority incidents.
+- Medical emergencies.
+- Accident reports.
+- Women safety reports.
+- Animal rescue requests.
+- Reports under verification.
+
+### All civic reports
+
+Authorities must be able to see every valid report submitted by citizens that falls within their assigned jurisdiction and department.
+
+Include:
+- Complaint ID.
+- Citizen report details.
+- Category.
+- Description.
+- Location.
+- GPS coordinates where authorized.
+- Uploaded photographs.
+- Videos.
+- AI analysis.
+- Severity.
+- Submission date.
+- Current status.
+- Fraud screening outcome where appropriate.
+
+### Report management
+
+Provide:
+- View report.
+- Open evidence.
+- View map location.
+- Assign officer.
+- Update status.
+- Add action notes.
+- Request additional information.
+- Upload resolution evidence.
+- Resolve complaint.
+- Reject with reason.
+- Escalate.
+
+### Filters
+
+- Category.
+- Ward.
+- Locality.
+- Severity.
+- Date.
+- Status.
+- Department.
+- AI risk level.
+
+### Authority notifications
+
+When a new valid report arrives:
+- Update the dashboard.
+- Show an alert.
+- Display notification.
+- Play an alert sound where permitted.
+- Allow acknowledgment.
+
+Keep the fraud review queue separate from the operational complaints queue.
+
+Do not show AI-flagged suspicious reports as verified operational complaints.
+
+Do not hide legitimate reports solely because of an automated AI prediction.
+
+### Authority analytics
+
+Show:
+- Reports by category.
+- Ward-wise distribution.
+- Average resolution time.
+- Pending complaints.
+- Resolved complaints.
+- Department performance.
+- Monthly trends.
+
+All charts must use actual database records.
+
+## PART 16 — CITIZEN REPORT TRACKING
+
+Create a dedicated My Reports page.
+
+Each report must have a unique complaint ID.
+
+Show a timeline:
+
+1. Report Submitted.
+2. AI Analysis Completed.
+3. Fraud Screening Completed.
+4. Report Routed.
+5. Authority Acknowledged.
+6. Work Assigned.
+7. Action Taken.
+8. Resolved.
+
+Show only milestones that have genuinely occurred.
+
+Allow citizens to:
+- Open complaint details.
+- View uploaded evidence.
+- View location.
+- Track status.
+- Receive notifications.
+- Add requested information.
+- Submit feedback after resolution.
+
+When an authority changes the status, the citizen should see the update in real time or through a reliable refresh mechanism.
+
+## PART 17 — NOTIFICATIONS
+
+Create a centralized notification system.
+
+Citizen notifications:
+- Registration.
+- Report submission.
+- AI analysis.
+- Authority acknowledgment.
+- Assignment.
+- Status update.
+- Resolution.
+- Emergency alerts.
+- Badge earned.
+- Leaderboard changes.
+- Award announcements.
+
+Authority notifications:
+- New valid report.
+- Emergency alert.
+- High-priority issue.
+- Escalation.
+- Pending reports.
+- Resolution requests.
+
+Use actual configured services:
+- In-app notifications.
+- Email.
+- SMS.
+- Push notifications where supported.
+
+Track actual delivery status.
+
+## PART 18 — ADMIN CONTROL CENTER AND PRIVACY HUB
+
+Keep a centralized administrative management section for authorized platform administrators.
+
+Include:
+- User Management.
+- Authority Management.
+- Department Management.
+- Fraud Review.
+- Report Verification.
+- Emergency Management.
+- Reward Configuration.
+- Award Management.
+- Privacy and DPDP Hub.
+- Analytics.
+- Audit Logs.
+
+Do not introduce unnecessary duplicate dashboards.
+
+Keep administrative functions separate from normal authority functions.
+
+## PART 19 — BACKEND AND DATABASE ARCHITECTURE
+
+Build a robust backend with appropriate data models.
+
+Suggested database tables:
+
+- users
+- user_profiles
+- authority_accounts
+- departments
+- jurisdictions
+- reports
+- report_media
+- report_locations
+- report_analysis
+- fraud_assessments
+- fraud_review_history
+- report_assignments
+- report_status_history
+- tracking_sessions
+- tracking_locations
+- emergency_contacts
+- sos_events
+- medical_requests
+- nearby_places_cache
+- notifications
+- citizen_points
+- citizen_badges
+- leaderboard_records
+- award_candidates
+- annual_awards
+- consent_records
+- audit_logs
+
+Use PostgreSQL with PostGIS where possible.
+
+Use geographic indexes and spatial queries for nearby-place and location-based functionality.
+
+Use secure storage for media.
+
+Implement proper relationships, constraints, pagination and database migrations.
+
+## PART 20 — TECHNOLOGY STACK
+
+Use a modern and maintainable architecture.
+
+Suggested stack:
+
+Frontend:
+- React.
+- TypeScript.
+- Tailwind CSS.
+- Modern component library.
+- Leaflet or Google Maps.
+
+Backend:
+- Node.js.
+- Express or equivalent.
+- REST APIs.
+- WebSockets for real-time updates.
+
+Database:
+- PostgreSQL.
+- PostGIS.
+
+Integrations:
+- ElevenLabs.
+- Google Places or OpenStreetMap.
+- Geolocation API.
+- AI vision and language model provider.
+- SMS/email provider.
+- Real-time notification service.
+
+Deployment:
+- Render for backend and deployment.
+- A compatible frontend hosting service if needed.
+- Managed PostgreSQL or Render PostgreSQL.
+
+Choose the architecture that works best with the existing project. Do not rewrite working components unnecessarily.
+
+## PART 21 — RENDER DEPLOYMENT
+
+Deploy the backend using Render.
+
+Requirements:
+- Production backend service.
+- Database connection.
+- Environment variables.
+- Secure API endpoints.
+- Health-check endpoint.
+- Deployment logs.
+- Error monitoring.
+- CORS configuration.
+- Production frontend/backend communication.
+
+Provide a complete deployment configuration.
+
+Ensure that the application remains functional after deployment and is not dependent on localhost.
+
+Do not put secrets in GitHub.
+
+## PART 22 — SECURITY AND PRIVACY
+
+Implement:
+- HTTPS.
+- Secure authentication.
+- Role-based access.
+- Password hashing.
+- OTP protection.
+- Rate limiting.
+- API authorization.
+- Private media storage.
+- Consent management.
+- Location-sharing permissions.
+- Tracking link expiry.
+- Data deletion requests.
+- Audit logs.
+
+Follow applicable Indian data protection requirements, including the DPDP framework.
+
+Never expose:
+- Citizen phone numbers.
+- Private profile details.
+- Emergency contact details.
+- Sensitive evidence.
+- Exact sensitive incident locations.
+
+## PART 23 — PERFORMANCE AND ERROR HANDLING
+
+The website must work smoothly on mobile devices and slower networks.
+
+Implement:
+- Loading states.
+- Empty states.
+- Retry options.
+- Error messages.
+- Pagination.
+- Lazy loading.
+- Optimized images.
+- Efficient API requests.
+- Database indexing.
+- GPS update management.
+- Battery-conscious tracking.
+
+Handle:
+- GPS permission denial.
+- Weak GPS.
+- Network failure.
+- API rate limits.
+- Database errors.
+- Upload failure.
+- ElevenLabs failure.
+- SMS failure.
+- Authentication expiry.
+- Duplicate submissions.
+
+Never show a fake success message.
+
+## PART 24 — COMPLETE END-TO-END TESTING
+
+Test the actual application.
+
+### GPS tests
+- Current location.
+- Permission denied.
+- GPS unavailable.
+- Weak accuracy.
+- Moving device.
+- Location update.
+- Tracking stop.
+- Tracking link.
+- Radius changes.
+
+### Nearby places tests
+- Hospitals.
+- Police stations.
+- Restaurants.
+- Parks.
+- Educational institutions.
+- Government offices.
+- Transport.
+- Different radius settings.
+- Distance calculations.
+- Empty results.
+- Map marker updates.
+
+### Reporting tests
+- Every category.
+- Photo upload.
+- Video upload.
+- AI analysis.
+- Fraud screening.
+- Database persistence.
+- Authority routing.
+- Complaint tracking.
+
+### Authority tests
+- Direct authorized login.
+- Department access.
+- Report visibility.
+- Filters.
+- Status changes.
+- Fraud review.
+- Resolution updates.
+
+### Reward tests
+- Points calculation.
+- Badge unlocking.
+- Leaderboard ranking.
+- Fraudulent points prevention.
+- Top 10 and Top 20 rankings.
+- Award eligibility.
+
+### Voice tests
+- Microphone permission.
+- Speech recognition.
+- Hindi and English.
+- Speech generation.
+- Complaint submission.
+- Error fallback.
+
+Fix all critical bugs before declaring the application complete.
+
+## PART 25 — FINAL DELIVERY REQUIREMENTS
+
+I want the complete working SEVA AI website.
+
+The final result must have:
+
+1. Simple, elegant and premium UI/UX.
+2. Functional citizen dashboard.
+3. Secure authority dashboard with direct access for verified authority accounts and no manual approval queue.
+4. Real GPS location sensing.
+5. Genuine live location tracking.
+6. Comprehensive nearby-place discovery.
+7. Radius selection.
+8. Interactive city map.
+9. Functional civic reporting.
+10. AI-powered report analysis.
+11. AI fraudulent report detection.
+12. Citizen complaint tracking.
+13. City Safety Heatmap.
+14. Seva Shield.
+15. Medical and accident assistance.
+16. Reward and badge system.
+17. Dynamic Top 10 and Top 20 leaderboard.
+18. State-level civic recognition framework.
+19. ElevenLabs AI voice integration.
+20. Render deployment.
+21. Secure database and backend.
+22. Complete mobile responsiveness.
+
+### NON-NEGOTIABLE INSTRUCTIONS
+
+- Do not remove existing features.
+- Do not create disconnected pages.
+- Do not add fake buttons.
+- Do not use mock GPS.
+- Do not use fabricated nearby places.
+- Do not simulate live tracking.
+- Do not create fake complaint records.
+- Do not fabricate AI results.
+- Do not fake authority acknowledgments.
+- Do not award points for unverified reports.
+- Do not expose private user information.
+- Do not claim government awards without actual authorization.
+
+Build the actual functionality first, then polish the UI.
+
+If an API key, service credential, provider account or external government integration is required, tell me exactly what is missing and provide configuration instructions.
+
+When implementation is complete, provide:
+- Working feature checklist.
+- API integration checklist.
+- Database implementation checklist.
+- Deployment URL.
+- Known limitations.
+- Testing results.
+- Remaining configuration requirements.
+
+**FINAL VISION:**
+
+SEVA AI should not look like an ordinary hackathon project. It should look and operate like a professional next-generation Indian digital civic services platform.
+
+Citizens should be able to report problems, discover everything around them, stay safe, track their complaints, and earn recognition for meaningful civic contributions.
+
+Authorities should be able to manage every valid civic issue through one intelligent operational dashboard.
+
+**SEVA AI — Empowering Citizens. Connecting Authorities. Building Safer Cities.**
