@@ -15,7 +15,28 @@ import {
 import { doc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
 import { OperationType, buildFirestoreErrorInfo, db } from '../lib/firebase';
-import { CivicReport, SupportedLanguage, UploadedFileRef } from '../types/seva';
+import { CivicReport, REPORT_STATUS_FLOW, ReportStatus, SupportedLanguage, UploadedFileRef } from '../types/seva';
+
+function statusBadgeClass(status: ReportStatus | string): string {
+  switch (status) {
+    case 'Verified Resolution':
+      return 'bg-emerald-50 text-emerald-900 border-emerald-200';
+    case 'Resolved – Awaiting Verification':
+      return 'bg-emerald-50 text-green-900 border-emerald-300';
+    case 'Escalated':
+    case 'Reopened':
+    case 'Rejected with reason':
+      return 'bg-red-50 text-red-800 border-red-200';
+    case 'AI Verification Pending':
+      return 'bg-amber-50 text-amber-900 border-amber-200';
+    case 'In Progress':
+    case 'Assigned':
+    case 'Verified':
+      return 'bg-slate-100 text-slate-900 border-slate-300';
+    default:
+      return 'bg-slate-50 text-slate-700 border-slate-200';
+  }
+}
 
 interface MyReportsViewProps {
   reports: CivicReport[];
@@ -46,6 +67,7 @@ export const MyReportsView: React.FC<MyReportsViewProps> = ({
 
   // Voice & Manual Follow-Up Reference Lookup
   const [lookupInput, setLookupInput] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('All');
   const [lookupResult, setLookupResult] = useState<CivicReport | null>(null);
   const [lookupError, setLookupError] = useState<string | null>(null);
   const [lookingUp, setLookingUp] = useState(false);
@@ -242,8 +264,18 @@ export const MyReportsView: React.FC<MyReportsViewProps> = ({
       if (action === 'confirm') {
         try {
           await updateDoc(doc(db, 'reports', report.id), {
+            status: 'Verified Resolution',
             feedbackRating: rating,
             feedbackComment: feedbackComment.trim().slice(0, 500),
+            updatedAt: serverTimestamp(),
+          });
+        } catch (err: any) {
+          buildFirestoreErrorInfo(err, OperationType.UPDATE, `reports/${report.id}`);
+        }
+      } else {
+        try {
+          await updateDoc(doc(db, 'reports', report.id), {
+            status: 'Reopened',
             updatedAt: serverTimestamp(),
           });
         } catch (err: any) {
@@ -363,6 +395,25 @@ export const MyReportsView: React.FC<MyReportsViewProps> = ({
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           {/* Complaint List */}
           <div className="lg:col-span-5 space-y-2.5">
+            <div className="flex items-center justify-between gap-2 pb-1">
+              <span className="text-xs font-semibold text-slate-700">
+                Submitted Reports ({reports.filter((r) => statusFilter === 'All' || r.status === statusFilter).length})
+              </span>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                aria-label="Filter reports by status"
+                className="text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white text-slate-800"
+              >
+                <option value="All">All Statuses</option>
+                {REPORT_STATUS_FLOW.map((st) => (
+                  <option key={st} value={st}>
+                    {st}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             {lookupResult && !reports.some((r) => r.id === lookupResult.id) && (
               <button
                 type="button"
@@ -377,7 +428,9 @@ export const MyReportsView: React.FC<MyReportsViewProps> = ({
                   <span className="font-mono font-semibold text-green-900">
                     LOOKUP · {lookupResult.referenceNumber || lookupResult.complaintId}
                   </span>
-                  <span className="font-medium text-green-900">{lookupResult.status}</span>
+                  <span className={`px-2 py-0.5 rounded border text-[11px] font-medium ${statusBadgeClass(lookupResult.status)}`}>
+                    {lookupResult.status}
+                  </span>
                 </div>
                 <div className="font-display text-sm font-semibold text-slate-900 mt-1">
                   {lookupResult.title}
@@ -385,39 +438,34 @@ export const MyReportsView: React.FC<MyReportsViewProps> = ({
               </button>
             )}
 
-            {reports.map((r) => (
-              <button
-                key={r.id}
-                type="button"
-                onClick={() => setSelectedId(r.id)}
-                className={`w-full text-left border rounded-xl p-4 transition-colors ${
-                  selected?.id === r.id
-                    ? 'border-green-900 bg-emerald-50/30'
-                    : 'border-slate-200 bg-white hover:bg-slate-50'
-                }`}
-              >
-                <div className="flex items-center justify-between text-xs text-slate-500 gap-2">
-                  <span className="font-mono font-semibold text-slate-800">
-                    {r.referenceNumber || r.complaintId}
-                  </span>
-                  <span
-                    className={`font-medium ${
-                      r.status === 'Reopened'
-                        ? 'text-red-700'
-                        : r.status === 'Awaiting Evidence'
-                        ? 'text-amber-700'
-                        : 'text-green-900'
-                    }`}
-                  >
-                    {r.status}
-                  </span>
-                </div>
-                <div className="font-display text-sm font-semibold text-slate-900 mt-1">{r.title}</div>
-                <div className="text-xs text-slate-600 mt-1">
-                  {r.category} · {r.department}
-                </div>
-              </button>
-            ))}
+            {reports
+              .filter((r) => statusFilter === 'All' || r.status === statusFilter)
+              .map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => setSelectedId(r.id)}
+                  className={`w-full text-left border rounded-xl p-4 transition-colors ${
+                    selected?.id === r.id
+                      ? 'border-green-900 bg-emerald-50/30'
+                      : 'border-slate-200 bg-white hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="flex items-center justify-between text-xs text-slate-500 gap-2">
+                    <span className="font-mono font-semibold text-slate-800">
+                      {r.referenceNumber || r.complaintId}
+                    </span>
+                    <span className={`px-2 py-0.5 rounded border text-[11px] font-medium ${statusBadgeClass(r.status)}`}>
+                      {r.status}
+                    </span>
+                  </div>
+                  <div className="font-display text-sm font-semibold text-slate-900 mt-1">{r.title}</div>
+                  <div className="text-xs text-slate-600 mt-1">
+                    {r.category} · {r.department}
+                    {r.escalationLevel && r.escalationLevel > 0 ? ` · Escalated L${r.escalationLevel}` : ''}
+                  </div>
+                </button>
+              ))}
           </div>
 
           {/* Detail & Milestone Timeline */}
@@ -435,15 +483,35 @@ export const MyReportsView: React.FC<MyReportsViewProps> = ({
                   </h2>
                 </div>
                 <div className="text-right">
-                  <div className="text-xs text-slate-500">Current Status</div>
-                  <div className="text-sm font-semibold text-green-900">{selected.status}</div>
+                  <div className="text-xs text-slate-500 mb-1">Current Status</div>
+                  <span className={`inline-block px-2.5 py-1 rounded border text-xs font-semibold ${statusBadgeClass(selected.status)}`}>
+                    {selected.status}
+                  </span>
                   {selected.verificationStatus && (
-                    <div className="text-[11px] text-slate-500 mt-0.5">
+                    <div className="text-[11px] text-slate-500 mt-1">
                       Verification: {selected.verificationStatus}
                     </div>
                   )}
                 </div>
               </div>
+
+              {selected.status === 'Rejected with reason' && (
+                <div className="border border-red-200 bg-red-50 rounded-lg p-3.5 text-xs text-red-900">
+                  <div className="font-semibold">Rejection Reason</div>
+                  <p className="mt-0.5">{selected.verificationNotes || selected.actionNotes || 'Rejected after review.'}</p>
+                </div>
+              )}
+
+              {(selected.escalationLevel || 0) > 0 && (
+                <div className="border border-amber-300 bg-amber-50 rounded-lg p-3.5 text-xs text-amber-950">
+                  <div className="font-semibold">
+                    SLA Escalated — Level {selected.escalationLevel}
+                  </div>
+                  {selected.escalations && selected.escalations.length > 0 && (
+                    <p className="mt-0.5">{selected.escalations[selected.escalations.length - 1].reason}</p>
+                  )}
+                </div>
+              )}
 
               {selected.additionalEvidenceRequested && (
                 <div className="border border-amber-300 bg-amber-50 rounded-lg p-3.5 text-xs text-amber-950 flex items-start gap-2">
@@ -571,8 +639,8 @@ export const MyReportsView: React.FC<MyReportsViewProps> = ({
               {/* Citizen Follow-Up / Additional Evidence Upload */}
               {firebaseUser &&
                 selected.reporterUid === firebaseUser.uid &&
-                selected.status !== 'Resolved' &&
-                selected.status !== 'Rejected' && (
+                selected.status !== 'Verified Resolution' &&
+                selected.status !== 'Rejected with reason' && (
                   <div className="pt-3 border-t border-slate-200 space-y-2.5">
                     <label className="block text-xs font-semibold text-slate-700">
                       Add Follow-Up Clarification or Evidence Files
@@ -612,9 +680,11 @@ export const MyReportsView: React.FC<MyReportsViewProps> = ({
               {/* Citizen Confirm Resolution OR Dispute / Reopen Loop */}
               {firebaseUser &&
                 selected.reporterUid === firebaseUser.uid &&
-                selected.status === 'Resolved' && (
+                (selected.status === 'Resolved – Awaiting Verification' ||
+                  selected.status === 'Verified Resolution') && (
                   <div className="pt-3 border-t border-slate-200 space-y-3">
-                    {!selected.citizenConfirmedResolution && !selected.feedbackRating ? (
+                    {selected.status === 'Resolved – Awaiting Verification' &&
+                    !selected.citizenConfirmedResolution ? (
                       <>
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="text-xs font-semibold text-slate-800">
@@ -688,7 +758,7 @@ export const MyReportsView: React.FC<MyReportsViewProps> = ({
                       </>
                     ) : (
                       <div className="text-xs text-emerald-900 bg-emerald-50 border border-emerald-200 rounded-lg p-3">
-                        Resolution confirmed by citizen · Rating: {selected.feedbackRating || 5}/5
+                        Verified Resolution{selected.feedbackRating ? ` · Citizen Rating: ${selected.feedbackRating}/5` : ''}
                         {selected.feedbackComment ? ` — "${selected.feedbackComment}"` : ''}
                       </div>
                     )}

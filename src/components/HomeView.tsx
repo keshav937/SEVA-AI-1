@@ -2,7 +2,6 @@ import React from 'react';
 import {
   ArrowRight,
   Building2,
-  Car,
   Compass,
   FileWarning,
   HeartPulse,
@@ -37,11 +36,6 @@ const CATEGORY_CARDS: Array<{ category: CivicCategory; dept: string; desc: strin
     category: 'Traffic and Road Obstructions',
     dept: 'Traffic Police',
     desc: 'Report broken signals, fallen trees, or severe carriageway blockages.',
-  },
-  {
-    category: 'Road Accident Reporting',
-    dept: 'Emergency Control Room',
-    desc: 'Fast-track accident alerts with live GPS, photo evidence, and nearby hospitals.',
   },
   {
     category: 'Medical Assistance',
@@ -93,8 +87,8 @@ export const HomeView: React.FC<HomeViewProps> = ({
             </h1>
             <p className="text-base text-slate-600 leading-relaxed max-w-2xl">
               {firebaseUser && profile
-                ? `Welcome back, ${profile.fullName}. Report civic issues by voice with SEVA SAATHI, request dedicated Medical or Road Accident dispatch, and track municipal resolution transparently.`
-                : 'Report civic hazards by voice or photo, access dedicated SOS, Medical & Road Accident assistance around your live GPS location, and track municipal action transparently.'}
+                ? `Welcome back, ${profile.fullName}. Report civic issues by voice with SEVA SAATHI, request dedicated Medical Assistance or SOS dispatch, and track municipal resolution transparently.`
+                : 'Report civic hazards by voice or photo, access dedicated Seva Shield SOS and Medical Assistance around your live GPS location, and track municipal action transparently.'}
             </p>
           </div>
 
@@ -190,19 +184,6 @@ export const HomeView: React.FC<HomeViewProps> = ({
 
         <button
           type="button"
-          onClick={() => onNavigate('accident')}
-          className="text-left border border-slate-200 rounded-xl bg-white p-4 hover:border-amber-600 transition-colors"
-        >
-          <div className="flex items-center gap-1.5 text-xs text-amber-800 font-semibold">
-            <Car className="w-4 h-4" />
-            Road Accident Help
-          </div>
-          <div className="text-sm font-semibold text-slate-900 mt-1">Crash Response &amp; Scene Photos</div>
-          <div className="text-xs text-slate-500 mt-1">Dispatch police + trauma units &amp; ACC tracking →</div>
-        </button>
-
-        <button
-          type="button"
           onClick={() => onNavigate('reports')}
           className="text-left border border-slate-200 rounded-xl bg-white p-4 hover:border-green-900 transition-colors"
         >
@@ -242,7 +223,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
         </button>
       </section>
 
-      {/* 8 Dedicated Civic Issue Categories (Includes Animal Rescue) */}
+      {/* 7 Dedicated Civic Issue Categories (Includes Animal Rescue) */}
       <section className="space-y-4">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>

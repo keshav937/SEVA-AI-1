@@ -12,7 +12,7 @@
         "phone": { "type": "string", "maxLength": 20 },
         "city": { "type": "string", "maxLength": 80 },
         "ward": { "type": "string", "maxLength": 80 },
-        "role": { "type": "string", "enum": ["citizen", "authority", "admin"], "maxLength": 20 },
+        "role": { "type": "string", "enum": ["citizen", "authority", "supervisor", "admin"], "maxLength": 20 },
         "department": { "type": "string", "maxLength": 80 },
         "points": { "type": "integer" },
         "verifiedReportsCount": { "type": "integer" },
@@ -55,7 +55,22 @@
         "title": { "type": "string", "minLength": 3, "maxLength": 160 },
         "description": { "type": "string", "minLength": 5, "maxLength": 3000 },
         "severity": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"], "maxLength": 20 },
-        "status": { "type": "string", "enum": ["Submitted", "Authority Acknowledged", "Assigned", "In Progress", "Resolved", "Rejected"], "maxLength": 40 },
+        "status": {
+          "type": "string",
+          "enum": [
+            "Submitted",
+            "AI Verification Pending",
+            "Verified",
+            "Rejected with reason",
+            "Assigned",
+            "In Progress",
+            "Resolved – Awaiting Verification",
+            "Verified Resolution",
+            "Reopened",
+            "Escalated"
+          ],
+          "maxLength": 48
+        },
         "department": { "type": "string", "maxLength": 80 },
         "ward": { "type": "string", "maxLength": 80 },
         "locality": { "type": "string", "maxLength": 120 },
@@ -109,7 +124,7 @@
       "properties": {
         "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "name": { "type": "string", "minLength": 1, "maxLength": 100 },
-        "phone": { "type": "string", "minLength": 10, "maxLength": 16, "pattern": "^(\\+91)?[6-9][0-9]{9}$" },
+        "phone": { "type": "string", "minLength": 10, "maxLength": 16, "pattern": "^(\\+[1-9][0-9]{7,14}|[6-9][0-9]{9})$" },
         "relation": { "type": "string", "maxLength": 40 },
         "consentGiven": { "type": "boolean" },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -152,7 +167,7 @@
         "lng": { "type": "number" },
         "address": { "type": "string", "maxLength": 300 },
         "nearestHospital": { "type": "string", "maxLength": 200 },
-        "status": { "type": "string", "enum": ["Received", "Authority Notified", "Acknowledged", "Assigned", "On the Way", "Resolved"], "maxLength": 40 },
+        "status": { "type": "string", "enum": ["Received", "Authority Notified", "Acknowledged", "Assigned", "Responder Assigned", "On the Way", "Completed", "Resolved"], "maxLength": 40 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },

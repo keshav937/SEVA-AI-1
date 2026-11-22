@@ -24,23 +24,38 @@ import {
   VOICE_LANGUAGE_CAPABILITIES,
 } from './server/elevenlabs.ts';
 import { fetchNearbyPlaces, geocodeLocationQuery, NearbyCategoryKey, reverseGeocode } from './server/places.ts';
-import { CaregiverRecipient, dispatchCaregiverSmsAlerts, isSmsGatewayConfigured, verifyTwilioWebhookSignature } from './server/sms.ts';
 import {
-  AccidentRequestRecord,
+  CaregiverRecipient,
+  dispatchCaregiverSmsAlerts,
+  isSmsGatewayConfigured,
+  normalizePhoneE164,
+  refreshTwilioSmsLogStatus,
+  registerSmsStatusListener,
+  verifyTwilioWebhookSignature,
+} from './server/sms.ts';
+import {
   addAuditLog,
+  addCallLog,
   addPlatformNotification,
   AuthorityRole,
+  AuthoritySession,
   CitizenComplaintAgainstAuthority,
   claimFirstRunAuthorityPasscode,
+  CLOSED_REPORT_STATUSES,
   ComplaintBoxStatus,
   computePerformanceAndAnalytics,
+  computeSlaDeadlines,
   createAuthoritySession,
   createCitizenComplaint,
+  deleteCaregiver,
   EmergencyRequestStatus,
-  getAccidentRequests,
+  findReportByIdempotencyKey,
+  getActiveReportsForSlaCheck,
   getAuditLogs,
   getAuthorityComplaintsForSession,
   getAuthoritySession,
+  getCallLogsByUid,
+  getCaregiversByUid,
   getCitizenComplaintById,
   getCitizenComplaintsByUid,
   getMedicalRequests,
@@ -52,6 +67,8 @@ import {
   getOperationalSosEvents,
   getPublicHeatmapIncidents,
   getRecentReportsForContext,
+  getSlaConfig,
+  getSmsLogById,
   getSmsLogs,
   getTrackingSession,
   isAuthorityPasscodeConfigured,
@@ -61,15 +78,18 @@ import {
   OperationalReportRecord,
   OperationalReportStatus,
   PlatformNotification,
-  updateAccidentRequest,
+  registerIdempotencyKey,
+  SLA_PAUSED_OR_CLOSED_STATUSES,
+  SlaConfig,
   updateCitizenComplaint,
   updateMedicalRequest,
   updateOfficerAvailability,
   updateOperationalReport,
   updateOperationalSos,
+  updateSlaConfig,
   updateSmsLogByProviderId,
   UploadedFileRef,
-  upsertAccidentRequest,
+  upsertCaregiver,
   upsertMedicalRequest,
   upsertOfficerProfile,
   upsertOperationalReport,
@@ -176,6 +196,10 @@ async function startServer() {
     }
   }
 
+  registerSmsStatusListener((log) => {
+    broadcast('authority:all', 'sms:updated', log);
+  });
+
   function pushNotification(params: Omit<PlatformNotification, 'id' | 'read' | 'createdAt'>): PlatformNotification {
     const saved = addPlatformNotification(params);
     if (saved.targetType === 'citizen' && saved.targetUid) {
@@ -206,6 +230,182 @@ async function startServer() {
     return false;
   }
 
+  function canSessionAccessReport(session: AuthoritySession, report: OperationalReportRecord): boolean {
+    if (session.role === 'admin') return true;
+    if (session.role === 'supervisor') {
+      return (
+        session.department === 'All Departments' ||
+        session.department === 'Emergency Control Room' ||
+        report.department === session.department
+      );
+    }
+    // Field authority officer: department match AND either unassigned or assigned to this officer
+    if (report.department !== session.department) return false;
+    if (!report.assignedOfficerUid && !report.assignedOfficer) return true;
+    return (
+      report.assignedOfficerUid === session.uid ||
+      Boolean(report.assignedOfficer && report.assignedOfficer.toLowerCase() === session.name.toLowerCase())
+    );
+  }
+
+  function formatStatusSmsMessage(report: OperationalReportRecord, extraNote?: string): string {
+    return `SEVA AI Update [${report.complaintId}]: Status is now "${report.status}" (${report.department}).${
+      extraNote ? ` Note: ${extraNote.slice(0, 120)}` : ''
+    }`;
+  }
+
+  async function maybeDispatchComplaintSms(
+    report: OperationalReportRecord,
+    eventType: 'complaint_status_updated' | 'resolution_completed',
+    extraNote?: string
+  ) {
+    const recipientPhone = report.reporterPhone;
+    if (!recipientPhone || report.smsUpdatesOptIn === false) return null;
+    return dispatchCaregiverSmsAlerts({
+      emergencyId: `${report.id}:${report.status}`,
+      emergencyType: eventType,
+      citizenName: report.reporterDisplayName,
+      messageBody: formatStatusSmsMessage(report, extraNote),
+      recipients: [{ name: report.reporterDisplayName, phone: recipientPhone }],
+    });
+  }
+
+  // Background Automated SLA Escalation Scheduler (runs independent of UI)
+  function runSlaEscalationSweep() {
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const activeReports = getActiveReportsForSlaCheck();
+
+    for (const r of activeReports) {
+      if (!r.slaDeadlineAt) continue;
+      const deadlineMs = new Date(r.slaDeadlineAt).getTime();
+      if (!Number.isFinite(deadlineMs)) continue;
+      const createdMs = new Date(r.createdAt).getTime() || nowMs;
+      const totalWindowMs = Math.max(1000, deadlineMs - createdMs);
+      const remainingMs = deadlineMs - nowMs;
+
+      // Approaching SLA Warning at <= 25% remaining
+      if (remainingMs > 0 && remainingMs <= totalWindowMs * 0.25 && !r.slaWarningSentAt) {
+        const warned = updateOperationalReport(r.id, (prev) => ({
+          ...prev,
+          slaWarningSentAt: nowIso,
+        }));
+        if (warned) {
+          pushNotification({
+            targetType: warned.assignedOfficerUid ? 'officer' : 'authority',
+            targetUid: warned.assignedOfficerUid,
+            targetDepartment: warned.department,
+            type: 'sla_approaching',
+            priority: 'high',
+            title: `Approaching SLA Deadline (${warned.complaintId})`,
+            message: `${warned.title} (${warned.severity}) is nearing SLA deadline (${warned.slaDeadlineAt}).`,
+            relatedType: 'report',
+            relatedId: warned.id,
+          });
+          broadcast('authority:all', 'report:updated', warned);
+        }
+        continue;
+      }
+
+      // SLA Breached -> Automatic Multi-Level Escalation without duplicates
+      if (nowMs >= deadlineMs) {
+        const overdueMs = nowMs - deadlineMs;
+        const currentLevel = r.escalationLevel || 0;
+        let nextLevel: 1 | 2 | 3 | null = null;
+        if (currentLevel < 1) {
+          nextLevel = 1;
+        } else if (currentLevel === 1 && overdueMs >= Math.max(2500, totalWindowMs * 0.5)) {
+          nextLevel = 2;
+        } else if (currentLevel === 2 && overdueMs >= Math.max(5000, totalWindowMs * 1.0)) {
+          nextLevel = 3;
+        }
+
+        if (!nextLevel) continue;
+        const alreadyLogged = (r.escalations || []).some((e) => e.level === nextLevel);
+        if (alreadyLogged) continue;
+
+        const targetRole =
+          nextLevel === 3
+            ? 'Senior Authority / Admin'
+            : nextLevel === 2
+            ? 'Department Supervisor'
+            : 'Assigned Officer / Duty Lead';
+
+        const reason = `Automated SLA Breach Escalation (Level ${nextLevel}): Complaint exceeded ${r.severity} SLA deadline (${r.slaDeadlineAt}).`;
+
+        const escalated = updateOperationalReport(r.id, (prev) => {
+          if ((prev.escalations || []).some((e) => e.level === nextLevel)) return prev;
+          return {
+            ...prev,
+            status: 'Escalated',
+            slaBreachedAt: prev.slaBreachedAt || nowIso,
+            escalationLevel: nextLevel!,
+            escalations: [
+              ...(prev.escalations || []),
+              {
+                id: `esc_auto_${Date.now()}_${nextLevel}`,
+                level: nextLevel!,
+                targetRole,
+                reason,
+                escalatedBy: 'Automated SLA Engine',
+                automated: true,
+                status: 'open',
+                createdAt: nowIso,
+              },
+            ],
+            timeline: [
+              ...prev.timeline,
+              {
+                step: `auto_escalated_l${nextLevel}`,
+                label: `Auto-Escalated (Level ${nextLevel}: ${targetRole})`,
+                actorRole: 'Automated SLA Engine',
+                note: reason,
+                timestamp: nowIso,
+              },
+            ],
+            updatedAt: nowIso,
+          };
+        });
+
+        if (escalated) {
+          addAuditLog({
+            actorUid: 'sla_scheduler',
+            actorRole: 'system',
+            department: escalated.department,
+            action: `auto_escalation_level_${nextLevel}`,
+            targetId: escalated.complaintId,
+            detail: reason,
+          });
+          pushNotification({
+            targetType: nextLevel === 1 && escalated.assignedOfficerUid ? 'officer' : 'supervisor',
+            targetUid: nextLevel === 1 ? escalated.assignedOfficerUid : undefined,
+            targetDepartment: escalated.department,
+            type: 'report_escalated',
+            priority: 'emergency',
+            title: `SLA Breached · L${nextLevel} Escalation (${escalated.complaintId})`,
+            message: `${escalated.title} escalated to ${targetRole}.`,
+            relatedType: 'escalation',
+            relatedId: escalated.id,
+          });
+          pushNotification({
+            targetType: 'citizen',
+            targetUid: escalated.reporterUid,
+            type: 'report_escalated',
+            priority: 'high',
+            title: `Complaint Escalated (${escalated.complaintId})`,
+            message: `Your report exceeded target SLA and was automatically escalated to ${targetRole}.`,
+            relatedType: 'report',
+            relatedId: escalated.id,
+          });
+          broadcast('authority:all', 'report:updated', escalated);
+          broadcast(`citizen:${escalated.reporterUid}`, 'report:updated', escalated);
+        }
+      }
+    }
+  }
+
+  setInterval(runSlaEscalationSweep, 3000);
+
   app.use((req, res, next) => {
     if (!req.path.startsWith('/api/')) {
       res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
@@ -228,6 +428,10 @@ async function startServer() {
         authorityPasscodeConfigured: isAuthorityPasscodeConfigured(),
         smsConfigured: smsCap.configured,
         smsProvider: smsCap.provider,
+        smsMode: smsCap.mode,
+        smsSenderConfigured: smsCap.senderPhoneConfigured,
+        smsMessagingServiceConfigured: smsCap.messagingServiceConfigured,
+        voiceCallingEnabled: smsCap.voiceEnabled,
       },
     });
   });
@@ -454,9 +658,9 @@ async function startServer() {
         const all = getOperationalReports({ fraudQueue: 'operational', includeSensitive: true });
         authorityStatsSummary = {
           total: all.length,
-          pending: all.filter((r) => r.status !== 'Resolved' && r.status !== 'Rejected').length,
-          resolved: all.filter((r) => r.status === 'Resolved').length,
-          emergencies: all.filter((r) => r.isEmergency && r.status !== 'Resolved').length,
+          pending: all.filter((r) => !CLOSED_REPORT_STATUSES.has(r.status)).length,
+          resolved: all.filter((r) => r.status === 'Verified Resolution' || r.status === 'Resolved – Awaiting Verification').length,
+          emergencies: all.filter((r) => r.isEmergency && !CLOSED_REPORT_STATUSES.has(r.status)).length,
           recentHeadlines: all.slice(0, 5).map((r) => `${r.complaintId}: ${r.category} (${r.status}) at ${r.locality || r.address}`),
         };
       }
@@ -843,17 +1047,148 @@ async function startServer() {
   });
 
   // =========================================================================
-  // 6. CIVIC REPORTS LIFECYCLE (SYNC, LOOKUP, VERIFY, ASSIGN, EVIDENCE, DISPUTE, ESCALATE)
+  // 6. CIVIC REPORTS LIFECYCLE (SYNC + AUTO AI VERIFY, DEDUP, FOLLOW-UP, CONFIRM/REOPEN)
   // =========================================================================
-  app.post('/api/reports/sync', (req, res) => {
+  app.post('/api/reports/sync', async (req, res) => {
     if (rejectIfAuthorityToken(req, res)) return;
     const body = req.body as OperationalReportRecord;
     if (!body?.id || !body?.complaintId || !body?.reporterUid || !body?.title) {
       return res.status(400).json({ error: 'Invalid report payload.' });
     }
 
+    const idemKey = body.idempotencyKey?.trim();
+    if (idemKey) {
+      const deduped = findReportByIdempotencyKey(idemKey);
+      if (deduped) {
+        return res.json({
+          synced: true,
+          deduplicated: true,
+          complaintId: deduped.complaintId,
+          referenceNumber: deduped.referenceNumber,
+          report: deduped,
+        });
+      }
+    }
+
     const existing = getOperationalReportById(body.id);
-    const saved = upsertOperationalReport(body);
+    const nowIso = new Date().toISOString();
+
+    let payloadToSave: OperationalReportRecord = {
+      ...body,
+      department: body.department || DEPARTMENT_BY_CATEGORY[body.category] || 'Municipal Corporation',
+      timeline: Array.isArray(body.timeline) && body.timeline.length > 0
+        ? body.timeline
+        : [
+            {
+              step: 'submitted',
+              label: 'Submitted by Citizen',
+              actorRole: 'Citizen',
+              note: body.address,
+              timestamp: body.createdAt || nowIso,
+            },
+          ],
+    };
+
+    // Automatic AI Verification on new submissions when not already pre-analyzed
+    if (!existing && !body.aiVerifiedAt) {
+      let photoBase64: string | undefined;
+      let photoMimeType: string | undefined;
+      let currentImageHash = body.imageHash;
+      if (body.photoDataUrl && typeof body.photoDataUrl === 'string' && body.photoDataUrl.startsWith('data:image/')) {
+        const match = body.photoDataUrl.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/);
+        if (match) {
+          photoMimeType = match[1];
+          photoBase64 = match[2];
+          currentImageHash = currentImageHash || crypto.createHash('sha256').update(photoBase64).digest('hex').slice(0, 24);
+        }
+      }
+
+      try {
+        const aiResult = await analyzeCivicReport({
+          category: body.category || CIVIC_CATEGORIES[0],
+          title: body.title.slice(0, 160),
+          description: (body.description || body.title).slice(0, 3000),
+          severity: body.severity || 'Medium',
+          address: body.address || '',
+          lat: Number(body.lat) || 0,
+          lng: Number(body.lng) || 0,
+          photoBase64,
+          photoMimeType,
+          recentReportsContext: getRecentReportsForContext(),
+          currentImageHash,
+        });
+
+        const shouldVerify = aiResult.recommendedAction === 'accept' && aiResult.fraudRiskScore < 45;
+        payloadToSave = {
+          ...payloadToSave,
+          imageHash: currentImageHash,
+          aiSummary: aiResult.summary,
+          aiSuggestedCategory: aiResult.suggestedCategory,
+          aiDetectedCategory: aiResult.aiDetectedCategory,
+          aiSuggestedSeverity: aiResult.suggestedSeverity,
+          aiConfidence: aiResult.confidence,
+          aiDuplicateCheck: aiResult.duplicateCheckResult,
+          aiMissingInfoFlags: aiResult.missingInfoFlags,
+          aiRecommendedAction: aiResult.recommendedAction,
+          aiVerifiedAt: nowIso,
+          imageMatchesDescription: aiResult.imageMatchesDescription,
+          detectedIssueFromImage: aiResult.detectedIssueFromImage,
+          fraudRiskScore: aiResult.fraudRiskScore,
+          fraudProbability: aiResult.fraudProbability,
+          fraudRiskLevel: aiResult.fraudRiskLevel,
+          fraudIndicators: aiResult.fraudIndicators || [],
+          fraudExplanation: aiResult.fraudExplanation,
+          evidenceCompleteness: aiResult.evidenceCompleteness,
+          recommendedActionText: aiResult.recommendedActionText,
+          fraudQueueStatus:
+            aiResult.fraudRiskScore >= 80
+              ? 'investigation_queue'
+              : aiResult.fraudRiskScore >= 60
+              ? 'restricted_queue'
+              : aiResult.fraudRiskScore >= 30 || aiResult.isDuplicate
+              ? 'validation_needed'
+              : 'cleared',
+          verificationStatus: shouldVerify ? 'Verified' : 'Flagged for Manual Review',
+          status: shouldVerify ? 'Verified' : 'AI Verification Pending',
+          timeline: [
+            ...payloadToSave.timeline,
+            {
+              step: shouldVerify ? 'ai_verified' : 'ai_verification_pending',
+              label: shouldVerify
+                ? `AI Verified (${aiResult.confidence}% confidence)`
+                : `AI Flagged for Manual Review (Risk ${aiResult.fraudRiskScore}/100)`,
+              actorRole: 'SEVA AI Verification Engine',
+              note: aiResult.recommendedActionText,
+              timestamp: nowIso,
+            },
+          ],
+        };
+      } catch (err: any) {
+        payloadToSave = {
+          ...payloadToSave,
+          imageHash: currentImageHash,
+          status: 'AI Verification Pending',
+          verificationStatus: 'Pending Verification',
+          aiVerificationError: err?.message || 'AI Verification service unavailable; queued for manual authority review.',
+          fraudIndicators: payloadToSave.fraudIndicators || [],
+          timeline: [
+            ...payloadToSave.timeline,
+            {
+              step: 'ai_verification_pending',
+              label: 'AI Verification Pending (Queued for Authority Review)',
+              actorRole: 'System',
+              note: err?.message || 'AI key unavailable or request timed out.',
+              timestamp: nowIso,
+            },
+          ],
+        };
+      }
+    }
+
+    const saved = upsertOperationalReport(payloadToSave);
+    if (idemKey) {
+      registerIdempotencyKey(idemKey, saved.id);
+    }
 
     if (!existing) {
       pushNotification({
@@ -862,7 +1197,7 @@ async function startServer() {
         type: 'report_submitted',
         priority: saved.isEmergency ? 'emergency' : 'normal',
         title: `Report ${saved.complaintId} Submitted`,
-        message: `Ref ${saved.referenceNumber} · Routed to ${saved.department}. Verification status: ${saved.verificationStatus}.`,
+        message: `Ref ${saved.referenceNumber} · Routed to ${saved.department}. Status: ${saved.status}.`,
         relatedType: 'report',
         relatedId: saved.id,
       });
@@ -870,10 +1205,13 @@ async function startServer() {
       pushNotification({
         targetType: 'authority',
         targetDepartment: saved.department,
-        type: saved.fraudQueueStatus === 'restricted_queue' || saved.fraudQueueStatus === 'investigation_queue' ? 'report_flagged' : 'report_new',
+        type:
+          saved.fraudQueueStatus === 'restricted_queue' || saved.fraudQueueStatus === 'investigation_queue'
+            ? 'report_flagged'
+            : 'report_new',
         priority: saved.isEmergency ? 'emergency' : saved.severity === 'High' || saved.severity === 'Critical' ? 'high' : 'normal',
         title: saved.isEmergency ? `EMERGENCY: ${saved.title}` : `New Civic Report (${saved.complaintId})`,
-        message: `${saved.category} · ${saved.severity} · ${saved.address} (AI Risk ${saved.fraudRiskScore}/100)`,
+        message: `${saved.category} · ${saved.severity} · ${saved.address} (${saved.status})`,
         relatedType: 'report',
         relatedId: saved.id,
       });
@@ -930,14 +1268,12 @@ async function startServer() {
       const nextDesc = note?.trim()
         ? `${prev.description}\n[Citizen Follow-Up ${new Date().toLocaleDateString()}]: ${note.trim()}`.slice(0, 3000)
         : prev.description;
-      const nextStatus: OperationalReportStatus =
-        prev.status === 'Awaiting Evidence' ? 'Under Verification' : prev.status;
       return {
         ...prev,
         description: nextDesc,
         citizenEvidenceUploads: nextUploads,
         additionalEvidenceRequested: false,
-        status: nextStatus,
+        status: prev.status === 'Submitted' || prev.additionalEvidenceRequested ? 'AI Verification Pending' : prev.status,
         timeline: [
           ...prev.timeline,
           {
@@ -970,7 +1306,7 @@ async function startServer() {
     return res.json({ report: updated });
   });
 
-  app.post('/api/citizen/reports/:id/resolution-response', (req, res) => {
+  app.post('/api/citizen/reports/:id/resolution-response', async (req, res) => {
     if (rejectIfAuthorityToken(req, res)) return;
     const { uid, action, rating, comment, disputeReason } = req.body as {
       uid?: string;
@@ -998,14 +1334,23 @@ async function startServer() {
         const cleanRating = typeof rating === 'number' ? Math.max(1, Math.min(5, Math.round(rating))) : 5;
         return {
           ...prev,
+          status: 'Verified Resolution',
           citizenConfirmedResolution: true,
           feedbackRating: cleanRating,
           feedbackComment: comment?.trim().slice(0, 500) || prev.feedbackComment,
+          resolutionEvidence: prev.resolutionEvidence
+            ? {
+                ...prev.resolutionEvidence,
+                approvalStatus: 'approved',
+                approvedBy: prev.resolutionEvidence.approvedBy || prev.reporterDisplayName,
+                approvedAt: prev.resolutionEvidence.approvedAt || nowIso,
+              }
+            : prev.resolutionEvidence,
           timeline: [
             ...prev.timeline,
             {
-              step: 'citizen_confirmed',
-              label: `Citizen Confirmed Resolution (${cleanRating}/5)`,
+              step: 'verified_resolution',
+              label: `Verified Resolution Confirmed by Citizen (${cleanRating}/5)`,
               actorRole: 'Citizen',
               note: comment?.trim() || undefined,
               timestamp: nowIso,
@@ -1052,13 +1397,22 @@ async function startServer() {
       targetDepartment: updated.department,
       type: action === 'reopen' ? 'report_reopened' : 'report_confirmed',
       priority: action === 'reopen' ? 'high' : 'normal',
-      title: action === 'reopen' ? `Report REOPENED (${updated.complaintId})` : `Citizen Confirmed Resolution (${updated.complaintId})`,
+      title:
+        action === 'reopen'
+          ? `Report REOPENED (${updated.complaintId})`
+          : `Verified Resolution (${updated.complaintId})`,
       message: action === 'reopen' ? `Citizen dispute: ${disputeReason}` : `Rated ${updated.feedbackRating}/5 by citizen.`,
       relatedType: 'report',
       relatedId: updated.id,
     });
     broadcast('authority:all', 'report:updated', updated);
     broadcast(`citizen:${updated.reporterUid}`, 'report:updated', updated);
+
+    if (action === 'confirm') {
+      await maybeDispatchComplaintSms(updated, 'resolution_completed', `Confirmed (${updated.feedbackRating}/5)`);
+    } else {
+      await maybeDispatchComplaintSms(updated, 'complaint_status_updated', `Reopened: ${disputeReason}`);
+    }
 
     return res.json({ report: updated });
   });
@@ -1081,8 +1435,49 @@ async function startServer() {
   });
 
   // =========================================================================
-  // 7. AUTHORITY REPORT OPERATIONS (GET, VERIFY, ASSIGN, MANAGE + EVIDENCE GATE, APPROVE, ESCALATE)
+  // 7. AUTHORITY REPORT OPERATIONS (GET, AI-VERIFY, VERIFY, PRIORITY, ASSIGN, MANAGE, APPROVE, ESCALATE, SLA CONFIG)
   // =========================================================================
+  app.get('/api/authority/sla-config', (req, res) => {
+    const session = getAuthoritySession(getBearerToken(req));
+    if (!session) return res.status(401).json({ error: 'Authorized department session required.' });
+    return res.json({ slaConfig: getSlaConfig() });
+  });
+
+  app.put('/api/authority/sla-config', (req, res) => {
+    const session = getAuthoritySession(getBearerToken(req));
+    if (!session) return res.status(401).json({ error: 'Authorized department session required.' });
+    if (session.role !== 'admin') {
+      return res.status(403).json({ error: 'Administrator privileges required to update SLA rules.' });
+    }
+    const { slaConfig, applyToOpenReports } = req.body as {
+      slaConfig?: SlaConfig;
+      applyToOpenReports?: boolean;
+    };
+    if (!slaConfig?.bySeverity) {
+      return res.status(400).json({ error: 'Valid slaConfig.bySeverity payload is required.' });
+    }
+    const saved = updateSlaConfig(slaConfig);
+    if (applyToOpenReports) {
+      for (const r of getActiveReportsForSlaCheck()) {
+        const nextDeadlines = computeSlaDeadlines(r.severity, r.isEmergency, r.createdAt, r.category);
+        updateOperationalReport(r.id, (prev) => ({
+          ...prev,
+          slaDeadlineAt: nextDeadlines.slaDeadlineAt,
+          slaResponseDeadlineAt: nextDeadlines.slaResponseDeadlineAt,
+        }));
+      }
+    }
+    addAuditLog({
+      actorUid: session.uid,
+      actorRole: session.role,
+      department: session.department,
+      action: 'sla_config_updated',
+      targetId: 'sla_config',
+      detail: `Updated SLA configuration${applyToOpenReports ? ' and recalculated active reports' : ''}.`,
+    });
+    return res.json({ slaConfig: saved });
+  });
+
   app.get('/api/authority/reports', (req, res) => {
     const session = getAuthoritySession(getBearerToken(req));
     if (!session) {
@@ -1092,11 +1487,14 @@ async function startServer() {
     const fraudQueue = (req.query.fraudQueue as 'operational' | 'fraud_review' | 'all') || 'all';
     const department = req.query.department
       ? String(req.query.department)
-      : session.role === 'admin' || session.role === 'supervisor' || session.department === 'Emergency Control Room' || session.department === 'All Departments'
+      : session.role === 'admin' ||
+        session.role === 'supervisor' ||
+        session.department === 'Emergency Control Room' ||
+        session.department === 'All Departments'
       ? 'All Departments'
       : session.department;
 
-    const reports = getOperationalReports({
+    const rawReports = getOperationalReports({
       department,
       category: req.query.category ? String(req.query.category) : undefined,
       status: req.query.status ? String(req.query.status) : undefined,
@@ -1106,15 +1504,19 @@ async function startServer() {
       onlyOverdue: req.query.onlyOverdue === 'true',
       onlyReopened: req.query.onlyReopened === 'true',
       onlyEmergency: req.query.onlyEmergency === 'true',
+      onlyEscalated: req.query.onlyEscalated === 'true',
+      onlyUnassigned: req.query.onlyUnassigned === 'true',
       fraudQueue,
       includeSensitive: true,
     });
 
-    const allOps = getOperationalReports({ fraudQueue: 'all', includeSensitive: true });
+    const reports = rawReports.filter((r) => canSessionAccessReport(session, r));
+    const scopedAll = getOperationalReports({ fraudQueue: 'all', includeSensitive: true }).filter((r) =>
+      canSessionAccessReport(session, r)
+    );
     const nowMs = Date.now();
     const sosEvents = getOperationalSosEvents();
     const medicalRequests = getMedicalRequests();
-    const accidentRequests = getAccidentRequests();
 
     return res.json({
       session: {
@@ -1126,52 +1528,138 @@ async function startServer() {
         role: session.role,
       },
       stats: {
-        total: allOps.length,
-        newReports: allOps.filter((r) => r.status === 'Submitted').length,
-        pending: allOps.filter((r) => r.status !== 'Resolved' && r.status !== 'Rejected').length,
-        verified: allOps.filter((r) => r.verificationStatus === 'Verified').length,
-        assigned: allOps.filter((r) => r.status === 'Assigned' || r.status === 'In Progress').length,
-        awaitingReview: allOps.filter((r) => r.status === 'Awaiting Authority Review').length,
-        resolved: allOps.filter((r) => r.status === 'Resolved').length,
-        rejected: allOps.filter((r) => r.status === 'Rejected').length,
-        reopened: allOps.filter((r) => r.status === 'Reopened').length,
-        overdue: allOps.filter(
-          (r) => r.status !== 'Resolved' && r.status !== 'Rejected' && r.slaDeadlineAt && new Date(r.slaDeadlineAt).getTime() < nowMs
+        total: scopedAll.length,
+        newReports: scopedAll.filter((r) => r.status === 'Submitted').length,
+        pending: scopedAll.filter((r) => !CLOSED_REPORT_STATUSES.has(r.status)).length,
+        verified: scopedAll.filter((r) => r.status === 'Verified' || r.verificationStatus === 'Verified').length,
+        assigned: scopedAll.filter((r) => r.status === 'Assigned' || r.status === 'In Progress').length,
+        inProgress: scopedAll.filter((r) => r.status === 'In Progress').length,
+        unassigned: scopedAll.filter((r) => !r.assignedOfficer && !r.assignedOfficerUid && !CLOSED_REPORT_STATUSES.has(r.status)).length,
+        awaitingReview: scopedAll.filter((r) => r.status === 'Resolved – Awaiting Verification').length,
+        resolved: scopedAll.filter(
+          (r) => r.status === 'Verified Resolution' || r.status === 'Resolved – Awaiting Verification'
         ).length,
-        highPriority: allOps.filter((r) => r.severity === 'High' || r.severity === 'Critical').length,
+        verifiedResolution: scopedAll.filter((r) => r.status === 'Verified Resolution').length,
+        rejected: scopedAll.filter((r) => r.status === 'Rejected with reason').length,
+        reopened: scopedAll.filter((r) => r.status === 'Reopened').length,
+        escalated: scopedAll.filter((r) => r.status === 'Escalated' || (r.escalations && r.escalations.length > 0)).length,
+        overdue: scopedAll.filter(
+          (r) => !SLA_PAUSED_OR_CLOSED_STATUSES.has(r.status) && r.slaDeadlineAt && new Date(r.slaDeadlineAt).getTime() < nowMs
+        ).length,
+        highPriority: scopedAll.filter((r) => r.severity === 'High' || r.severity === 'Critical').length,
         activeSos: sosEvents.filter((s) => s.status === 'active' || s.status === 'acknowledged').length,
         activeMedical: medicalRequests.filter((m) => m.status !== 'Completed').length,
-        activeAccidents: accidentRequests.filter((a) => a.status !== 'Completed').length,
-        underVerification: allOps.filter(
+        underVerification: scopedAll.filter(
           (r) =>
+            r.status === 'AI Verification Pending' ||
             r.verificationStatus === 'Pending Verification' ||
             r.verificationStatus === 'Flagged for Manual Review' ||
             r.fraudQueueStatus === 'restricted_queue' ||
             r.fraudQueueStatus === 'investigation_queue'
         ).length,
       },
+      slaConfig: getSlaConfig(),
       reports,
       sosEvents,
       medicalRequests,
-      accidentRequests,
       officers: getOfficers('All Departments'),
       smsLogs: getSmsLogs().slice(0, 100),
       auditLogs: session.role === 'admin' || session.role === 'supervisor' ? getAuditLogs().slice(0, 120) : getAuditLogs().slice(0, 40),
     });
   });
 
-  app.post('/api/authority/reports/:id/verify', (req, res) => {
+  app.post('/api/authority/reports/:id/ai-verify', async (req, res) => {
     const session = getAuthoritySession(getBearerToken(req));
     if (!session) return res.status(401).json({ error: 'Authorized department session required.' });
 
-    const { decision, notes, requestEvidenceNote } = req.body as {
+    const target = getOperationalReportById(req.params.id);
+    if (!target) return res.status(404).json({ error: 'Report not found.' });
+    if (!canSessionAccessReport(session, target)) {
+      return res.status(403).json({ error: 'Access denied: Report belongs to another department or officer.' });
+    }
+
+    let photoBase64: string | undefined;
+    let photoMimeType: string | undefined;
+    if (target.photoDataUrl && target.photoDataUrl.startsWith('data:image/')) {
+      const m = target.photoDataUrl.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/);
+      if (m) {
+        photoMimeType = m[1];
+        photoBase64 = m[2];
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    try {
+      const aiResult = await analyzeCivicReport({
+        category: target.category,
+        title: target.title,
+        description: target.description,
+        severity: target.severity,
+        address: target.address,
+        lat: target.lat,
+        lng: target.lng,
+        photoBase64,
+        photoMimeType,
+        recentReportsContext: getRecentReportsForContext().filter((r) => r.id !== target.complaintId),
+        currentImageHash: target.imageHash,
+      });
+
+      const updated = updateOperationalReport(target.id, (prev) => ({
+        ...prev,
+        aiSummary: aiResult.summary,
+        aiSuggestedCategory: aiResult.suggestedCategory,
+        aiDetectedCategory: aiResult.aiDetectedCategory,
+        aiSuggestedSeverity: aiResult.suggestedSeverity,
+        aiConfidence: aiResult.confidence,
+        aiDuplicateCheck: aiResult.duplicateCheckResult,
+        aiMissingInfoFlags: aiResult.missingInfoFlags,
+        aiRecommendedAction: aiResult.recommendedAction,
+        aiVerificationError: undefined,
+        aiVerifiedAt: nowIso,
+        imageMatchesDescription: aiResult.imageMatchesDescription,
+        detectedIssueFromImage: aiResult.detectedIssueFromImage,
+        fraudRiskScore: aiResult.fraudRiskScore,
+        fraudProbability: aiResult.fraudProbability,
+        fraudRiskLevel: aiResult.fraudRiskLevel,
+        fraudIndicators: aiResult.fraudIndicators || [],
+        fraudExplanation: aiResult.fraudExplanation,
+        evidenceCompleteness: aiResult.evidenceCompleteness,
+        recommendedActionText: aiResult.recommendedActionText,
+        updatedAt: nowIso,
+      }));
+
+      broadcast('authority:all', 'report:updated', updated);
+      return res.json({ report: updated, aiResult });
+    } catch (err: any) {
+      const updated = updateOperationalReport(target.id, (prev) => ({
+        ...prev,
+        aiVerificationError: err?.message || 'AI analysis service unavailable.',
+        updatedAt: nowIso,
+      }));
+      return res.status(502).json({
+        error: err?.message || 'AI Verification service unavailable.',
+        report: updated,
+      });
+    }
+  });
+
+  app.post('/api/authority/reports/:id/verify', async (req, res) => {
+    const session = getAuthoritySession(getBearerToken(req));
+    if (!session) return res.status(401).json({ error: 'Authorized department session required.' });
+
+    const { decision, notes, requestEvidenceNote, overrideCategory, overrideSeverity } = req.body as {
       decision?: 'verify' | 'flag' | 'reject' | 'request_evidence';
       notes?: string;
       requestEvidenceNote?: string;
+      overrideCategory?: string;
+      overrideSeverity?: 'Low' | 'Medium' | 'High' | 'Critical';
     };
 
     const target = getOperationalReportById(req.params.id);
     if (!target) return res.status(404).json({ error: 'Report not found.' });
+    if (!canSessionAccessReport(session, target)) {
+      return res.status(403).json({ error: 'Access denied: Report belongs to another department or officer.' });
+    }
     if (!decision) return res.status(400).json({ error: 'Verification decision required.' });
     if (decision === 'reject' && (!notes || notes.trim().length < 5)) {
       return res.status(400).json({ error: 'Please provide a clear rejection reason (minimum 5 characters).' });
@@ -1182,12 +1670,28 @@ async function startServer() {
 
     const nowIso = new Date().toISOString();
     const updated = updateOperationalReport(req.params.id, (prev) => {
+      const nextCategory = overrideCategory?.trim() || prev.category;
+      const nextSeverity = overrideSeverity || prev.severity;
+      const nextDept = overrideCategory?.trim()
+        ? DEPARTMENT_BY_CATEGORY[nextCategory] || prev.department
+        : prev.department;
+      const nextSla =
+        overrideCategory || overrideSeverity
+          ? computeSlaDeadlines(nextSeverity, nextSeverity === 'Critical' || prev.isEmergency, prev.createdAt, nextCategory)
+          : { slaDeadlineAt: prev.slaDeadlineAt, slaResponseDeadlineAt: prev.slaResponseDeadlineAt };
+
       if (decision === 'verify') {
         return {
           ...prev,
+          category: nextCategory,
+          severity: nextSeverity,
+          department: nextDept,
+          slaDeadlineAt: nextSla.slaDeadlineAt,
+          slaResponseDeadlineAt: nextSla.slaResponseDeadlineAt,
           verificationStatus: 'Verified',
           fraudQueueStatus: 'cleared',
-          status: prev.status === 'Submitted' || prev.status === 'Under Verification' ? 'Verified' : prev.status,
+          status:
+            prev.status === 'Submitted' || prev.status === 'AI Verification Pending' ? 'Verified' : prev.status,
           verificationNotes: notes?.trim() || prev.verificationNotes,
           verifiedBy: session.name,
           verifiedAt: nowIso,
@@ -1195,7 +1699,7 @@ async function startServer() {
             ...prev.timeline,
             {
               step: 'verified',
-              label: 'Report Verified by Authority',
+              label: 'Verified by Authority',
               actorRole: `${session.department} (${session.name})`,
               note: notes?.trim() || 'Cleared for operational assignment',
               timestamp: nowIso,
@@ -1207,15 +1711,18 @@ async function startServer() {
       if (decision === 'flag') {
         return {
           ...prev,
+          category: nextCategory,
+          severity: nextSeverity,
+          department: nextDept,
           verificationStatus: 'Flagged for Manual Review',
           fraudQueueStatus: 'investigation_queue',
-          status: 'Under Verification',
+          status: 'AI Verification Pending',
           verificationNotes: notes?.trim() || prev.verificationNotes,
           timeline: [
             ...prev.timeline,
             {
               step: 'flagged_manual_review',
-              label: 'Flagged for Manual Review',
+              label: 'Flagged for Manual Verification',
               actorRole: `${session.department} (${session.name})`,
               note: notes?.trim() || 'Requires secondary verification before dispatch',
               timestamp: nowIso,
@@ -1227,7 +1734,7 @@ async function startServer() {
       if (decision === 'request_evidence') {
         return {
           ...prev,
-          status: 'Awaiting Evidence',
+          status: 'AI Verification Pending',
           additionalEvidenceRequested: true,
           additionalEvidenceRequestNote: requestEvidenceNote!.trim().slice(0, 500),
           verificationNotes: notes?.trim() || prev.verificationNotes,
@@ -1248,7 +1755,7 @@ async function startServer() {
         ...prev,
         verificationStatus: 'Rejected',
         fraudQueueStatus: 'rejected',
-        status: 'Rejected',
+        status: 'Rejected with reason',
         verificationNotes: notes!.trim(),
         actionNotes: notes!.trim(),
         verifiedBy: session.name,
@@ -1256,8 +1763,8 @@ async function startServer() {
         timeline: [
           ...prev.timeline,
           {
-            step: 'rejected',
-            label: 'Report Rejected',
+            step: 'rejected_with_reason',
+            label: 'Rejected with reason',
             actorRole: `${session.department} (${session.name})`,
             note: notes!.trim(),
             timestamp: nowIso,
@@ -1282,14 +1789,14 @@ async function startServer() {
       targetType: 'citizen',
       targetUid: updated.reporterUid,
       type: `verification_${decision}`,
-      priority: decision === 'request_evidence' ? 'high' : 'normal',
+      priority: decision === 'request_evidence' || decision === 'reject' ? 'high' : 'normal',
       title:
         decision === 'verify'
           ? `Report ${updated.complaintId} Verified`
           : decision === 'request_evidence'
           ? `Action Required: Evidence Requested (${updated.complaintId})`
           : decision === 'reject'
-          ? `Report ${updated.complaintId} Rejected`
+          ? `Report ${updated.complaintId} Rejected with reason`
           : `Report ${updated.complaintId} Under Manual Verification`,
       message: notes || requestEvidenceNote || `Status is now ${updated.status}.`,
       relatedType: 'report',
@@ -1298,11 +1805,68 @@ async function startServer() {
 
     broadcast(`citizen:${updated.reporterUid}`, 'report:updated', updated);
     broadcast('authority:all', 'report:updated', updated);
+    await maybeDispatchComplaintSms(updated, 'complaint_status_updated', notes || requestEvidenceNote);
 
     return res.json({ report: updated });
   });
 
-  app.post('/api/authority/reports/:id/assign', (req, res) => {
+  app.patch('/api/authority/reports/:id/priority', (req, res) => {
+    const session = getAuthoritySession(getBearerToken(req));
+    if (!session) return res.status(401).json({ error: 'Authorized department session required.' });
+
+    const { severity, reason } = req.body as {
+      severity?: 'Low' | 'Medium' | 'High' | 'Critical';
+      reason?: string;
+    };
+    if (!severity || !['Low', 'Medium', 'High', 'Critical'].includes(severity)) {
+      return res.status(400).json({ error: 'Valid severity (Low, Medium, High, Critical) required.' });
+    }
+
+    const target = getOperationalReportById(req.params.id);
+    if (!target) return res.status(404).json({ error: 'Report not found.' });
+    if (!canSessionAccessReport(session, target)) {
+      return res.status(403).json({ error: 'Access denied: Report belongs to another department or officer.' });
+    }
+
+    const nowIso = new Date().toISOString();
+    const updated = updateOperationalReport(req.params.id, (prev) => {
+      const nextSla = computeSlaDeadlines(severity, severity === 'Critical' || prev.isEmergency, prev.createdAt, prev.category);
+      return {
+        ...prev,
+        severity,
+        isEmergency: severity === 'Critical' ? true : prev.isEmergency,
+        slaDeadlineAt: nextSla.slaDeadlineAt,
+        slaResponseDeadlineAt: nextSla.slaResponseDeadlineAt,
+        timeline: [
+          ...prev.timeline,
+          {
+            step: 'priority_changed',
+            label: `Priority updated to ${severity}`,
+            actorRole: `${session.department} (${session.name})`,
+            note: reason?.trim() || undefined,
+            timestamp: nowIso,
+          },
+        ],
+        updatedAt: nowIso,
+      };
+    });
+
+    if (!updated) return res.status(404).json({ error: 'Priority update failed.' });
+
+    addAuditLog({
+      actorUid: session.uid,
+      actorRole: session.role,
+      department: session.department,
+      action: 'report_priority_changed',
+      targetId: updated.complaintId,
+      detail: `Priority set to ${severity}${reason ? ` — ${reason}` : ''}.`,
+    });
+    broadcast('authority:all', 'report:updated', updated);
+    broadcast(`citizen:${updated.reporterUid}`, 'report:updated', updated);
+    return res.json({ report: updated });
+  });
+
+  app.post('/api/authority/reports/:id/assign', async (req, res) => {
     const session = getAuthoritySession(getBearerToken(req));
     if (!session) return res.status(401).json({ error: 'Authorized department session required.' });
 
@@ -1315,6 +1879,16 @@ async function startServer() {
 
     const target = getOperationalReportById(req.params.id);
     if (!target) return res.status(404).json({ error: 'Report not found.' });
+    if (!canSessionAccessReport(session, target)) {
+      return res.status(403).json({ error: 'Access denied: Cannot assign a report outside your authorized scope.' });
+    }
+    if (
+      session.role === 'authority' &&
+      target.assignedOfficerUid &&
+      target.assignedOfficerUid !== session.uid
+    ) {
+      return res.status(403).json({ error: 'Field officers cannot reassign reports already assigned to another officer.' });
+    }
 
     const roster = getOfficers('All Departments');
     const matchedOfficer = officerUid
@@ -1354,12 +1928,18 @@ async function startServer() {
         reason: reason?.trim() || undefined,
         assignedAt: nowIso,
       };
+      const canTransitionToAssigned =
+        prev.status === 'Submitted' ||
+        prev.status === 'AI Verification Pending' ||
+        prev.status === 'Verified' ||
+        prev.status === 'Reopened' ||
+        prev.status === 'Escalated';
       return {
         ...prev,
         department: finalDept,
         assignedOfficer: finalOfficerName,
         assignedOfficerUid: finalOfficerUid,
-        status: prev.status === 'Submitted' || prev.status === 'Under Verification' || prev.status === 'Verified' || prev.status === 'Reopened' ? 'Assigned' : prev.status,
+        status: canTransitionToAssigned ? 'Assigned' : prev.status,
         assignmentHistory: [...(prev.assignmentHistory || []), assignmentEntry],
         timeline: [
           ...prev.timeline,
@@ -1413,11 +1993,12 @@ async function startServer() {
 
     broadcast(`citizen:${updated.reporterUid}`, 'report:updated', updated);
     broadcast('authority:all', 'report:updated', updated);
+    await maybeDispatchComplaintSms(updated, 'complaint_status_updated', `Assigned to ${finalOfficerName}`);
 
     return res.json({ report: updated, officers: getOfficers('All Departments') });
   });
 
-  app.post('/api/authority/reports/:id/manage', (req, res) => {
+  app.post('/api/authority/reports/:id/manage', async (req, res) => {
     const session = getAuthoritySession(getBearerToken(req));
     if (!session) {
       return res.status(401).json({ error: 'Authorized department session required.' });
@@ -1451,6 +2032,9 @@ async function startServer() {
     if (!target) {
       return res.status(404).json({ error: 'Report not found in operational registry.' });
     }
+    if (!canSessionAccessReport(session, target)) {
+      return res.status(403).json({ error: 'Access denied: Report belongs to another department or officer.' });
+    }
 
     const mergedBefore = beforePhotos || target.resolutionEvidence?.beforePhotos || [];
     const mergedAfter = afterPhotos || target.resolutionEvidence?.afterPhotos || [];
@@ -1458,12 +2042,13 @@ async function startServer() {
     const mergedNotes = (resolutionNotes || actionNotes || target.resolutionEvidence?.completionNotes || '').trim();
     const mergedDesc = (resolutionDescription || target.resolutionEvidence?.description || mergedNotes).trim();
 
-    // STRICT RESOLUTION EVIDENCE GATE:
-    // Cannot resolve or submit for authority review without before photo(s), after photo(s), and completion notes!
-    if (status === 'Resolved' || status === 'Awaiting Authority Review' || submitForApproval) {
-      if (mergedBefore.length === 0 || mergedAfter.length === 0) {
+    const isSubmittingResolution =
+      status === 'Resolved – Awaiting Verification' || status === 'Verified Resolution' || submitForApproval;
+
+    if (isSubmittingResolution) {
+      if (mergedAfter.length === 0) {
         return res.status(400).json({
-          error: 'Resolution Evidence Required: Upload at least 1 Before-Work photo and 1 After-Work photo before marking Resolved or submitting for review.',
+          error: 'Resolution Evidence Required: Upload at least 1 After-Work / Resolution proof photo before marking resolved.',
         });
       }
       if (mergedNotes.length < 5) {
@@ -1473,17 +2058,13 @@ async function startServer() {
       }
     }
 
-    if (status === 'Rejected' && !mergedNotes) {
-      return res.status(400).json({ error: 'A rejection reason is required in Action Notes.' });
+    if (status === 'Rejected with reason' && mergedNotes.length < 5) {
+      return res.status(400).json({ error: 'A rejection reason (minimum 5 characters) is required.' });
     }
 
-    // If an ordinary field officer attempts direct Resolve, route through Awaiting Authority Review unless supervisor/admin OR approve endpoint is used
     let effectiveStatus: OperationalReportStatus = status || target.status;
-    if (submitForApproval) {
-      effectiveStatus = 'Awaiting Authority Review';
-    } else if (effectiveStatus === 'Resolved' && session.role === 'authority' && target.status !== 'Awaiting Authority Review') {
-      // Field officer completed work with evidence -> supervisor/second-authority approval required
-      effectiveStatus = 'Awaiting Authority Review';
+    if (submitForApproval || (effectiveStatus === 'Verified Resolution' && session.role === 'authority')) {
+      effectiveStatus = 'Resolved – Awaiting Verification';
     }
 
     const nowIso = new Date().toISOString();
@@ -1493,10 +2074,10 @@ async function startServer() {
 
       if (effectiveStatus !== prev.status) {
         nextTimeline.push({
-          step: effectiveStatus.toLowerCase().replace(/\s+/g, '_'),
+          step: effectiveStatus.toLowerCase().replace(/[^a-z0-9]+/g, '_'),
           label:
-            effectiveStatus === 'Awaiting Authority Review'
-              ? 'Resolution Evidence Submitted (Awaiting Final Approval)'
+            effectiveStatus === 'Resolved – Awaiting Verification'
+              ? 'Resolution Proof Uploaded (Resolved – Awaiting Verification)'
               : effectiveStatus,
           actorRole: `${session.department} (${session.name})`,
           note: mergedNotes || undefined,
@@ -1510,8 +2091,8 @@ async function startServer() {
             fraudDecision === 'cleared'
               ? 'Seva Trust Review Cleared'
               : fraudDecision === 'rejected'
-              ? 'Rejected After Verification Review'
-              : 'Flagged for Manual Investigation',
+              ? 'Rejected with reason'
+              : 'Flagged for Manual Verification',
           actorRole: `Verification (${session.name})`,
           note: actionNotes || undefined,
           timestamp: nowIso,
@@ -1530,10 +2111,10 @@ async function startServer() {
             resolvingOfficer: session.name,
             resolvingOfficerUid: session.uid,
             approvalStatus:
-              effectiveStatus === 'Resolved'
+              effectiveStatus === 'Verified Resolution'
                 ? ('approved' as const)
                 : ('pending_review' as const),
-            ...(effectiveStatus === 'Resolved'
+            ...(effectiveStatus === 'Verified Resolution'
               ? { approvedBy: session.name, approvedAt: nowIso }
               : {}),
           }
@@ -1541,11 +2122,14 @@ async function startServer() {
 
       return {
         ...prev,
-        status: fraudDecision === 'rejected' ? 'Rejected' : effectiveStatus,
+        status: fraudDecision === 'rejected' ? 'Rejected with reason' : effectiveStatus,
         assignedOfficer: assignedOfficer ?? prev.assignedOfficer ?? session.name,
         assignedOfficerUid: prev.assignedOfficerUid || session.uid,
         actionNotes: actionNotes ?? prev.actionNotes,
-        resolutionNotes: effectiveStatus === 'Resolved' || effectiveStatus === 'Awaiting Authority Review' ? mergedNotes : prev.resolutionNotes,
+        resolutionNotes:
+          effectiveStatus === 'Resolved – Awaiting Verification' || effectiveStatus === 'Verified Resolution'
+            ? mergedNotes
+            : prev.resolutionNotes,
         resolutionEvidence: nextResolutionEvidence,
         fraudQueueStatus: nextFraud,
         verificationStatus:
@@ -1577,22 +2161,25 @@ async function startServer() {
     pushNotification({
       targetType: 'citizen',
       targetUid: updated.reporterUid,
-      type: `report_${updated.status.toLowerCase().replace(/\s+/g, '_')}`,
-      priority: updated.status === 'Resolved' ? 'high' : 'normal',
+      type: `report_${updated.status.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
+      priority:
+        updated.status === 'Resolved – Awaiting Verification' || updated.status === 'Verified Resolution'
+          ? 'high'
+          : 'normal',
       title: `Update on ${updated.complaintId}: ${updated.status}`,
       message: mergedNotes || `Department ${updated.department} updated status to ${updated.status}.`,
       relatedType: 'report',
       relatedId: updated.id,
     });
 
-    if (updated.status === 'Awaiting Authority Review') {
+    if (updated.status === 'Resolved – Awaiting Verification') {
       pushNotification({
         targetType: 'supervisor',
         targetDepartment: updated.department,
         type: 'resolution_review_needed',
         priority: 'high',
-        title: `Final Resolution Approval Needed (${updated.complaintId})`,
-        message: `${session.name} uploaded before/after evidence photos for supervisor approval.`,
+        title: `Resolution Verification Needed (${updated.complaintId})`,
+        message: `${session.name} uploaded resolution proof photos awaiting Citizen/Supervisor verification.`,
         relatedType: 'report',
         relatedId: updated.id,
       });
@@ -1601,14 +2188,22 @@ async function startServer() {
     broadcast(`citizen:${updated.reporterUid}`, 'report:updated', updated);
     broadcast('authority:all', 'report:updated', updated);
 
+    if (updated.status === 'Resolved – Awaiting Verification' || updated.status === 'Verified Resolution') {
+      await maybeDispatchComplaintSms(updated, 'resolution_completed', mergedNotes);
+    } else {
+      await maybeDispatchComplaintSms(updated, 'complaint_status_updated', mergedNotes);
+    }
+
     return res.json({ report: updated });
   });
 
-  app.post('/api/authority/reports/:id/approve-resolution', (req, res) => {
+  app.post('/api/authority/reports/:id/approve-resolution', async (req, res) => {
     const session = getAuthoritySession(getBearerToken(req));
     if (!session) return res.status(401).json({ error: 'Authorized department session required.' });
     if (session.role !== 'supervisor' && session.role !== 'admin') {
-      return res.status(403).json({ error: 'Department Supervisor or Administrator authority required for final resolution approval.' });
+      return res.status(403).json({
+        error: 'Department Supervisor or Administrator authority required for final resolution approval.',
+      });
     }
 
     const { decision, approvalNotes } = req.body as {
@@ -1618,8 +2213,11 @@ async function startServer() {
 
     const target = getOperationalReportById(req.params.id);
     if (!target) return res.status(404).json({ error: 'Report not found.' });
+    if (!canSessionAccessReport(session, target)) {
+      return res.status(403).json({ error: 'Access denied: Report belongs to another department.' });
+    }
     if (!target.resolutionEvidence || target.resolutionEvidence.afterPhotos.length === 0) {
-      return res.status(400).json({ error: 'Cannot approve resolution without before/after resolution evidence.' });
+      return res.status(400).json({ error: 'Cannot approve resolution without resolution proof photos.' });
     }
 
     const nowIso = new Date().toISOString();
@@ -1627,7 +2225,7 @@ async function startServer() {
       const approved = decision !== 'request_rework';
       return {
         ...prev,
-        status: approved ? 'Resolved' : 'In Progress',
+        status: approved ? 'Verified Resolution' : 'In Progress',
         resolutionEvidence: {
           ...prev.resolutionEvidence!,
           approvalStatus: approved ? 'approved' : 'changes_requested',
@@ -1638,8 +2236,8 @@ async function startServer() {
         timeline: [
           ...prev.timeline,
           {
-            step: approved ? 'resolution_approved' : 'rework_requested',
-            label: approved ? 'Final Resolution Approved by Supervisor' : 'Supervisor Requested Rework',
+            step: approved ? 'verified_resolution' : 'rework_requested',
+            label: approved ? 'Verified Resolution Approved by Supervisor' : 'Supervisor Requested Rework',
             actorRole: `${session.role.toUpperCase()} (${session.name})`,
             note: approvalNotes?.trim() || undefined,
             timestamp: nowIso,
@@ -1657,7 +2255,9 @@ async function startServer() {
       department: session.department,
       action: decision === 'request_rework' ? 'resolution_rework_requested' : 'resolution_approved',
       targetId: updated.complaintId,
-      detail: approvalNotes || `Supervisor ${session.name} ${decision === 'request_rework' ? 'returned for rework' : 'approved final closure'}.`,
+      detail:
+        approvalNotes ||
+        `Supervisor ${session.name} ${decision === 'request_rework' ? 'returned for rework' : 'approved Verified Resolution'}.`,
     });
 
     pushNotification({
@@ -1668,17 +2268,18 @@ async function startServer() {
       title:
         decision === 'request_rework'
           ? `Quality Check Rework Initiated (${updated.complaintId})`
-          : `Issue Resolved & Verified (${updated.complaintId})`,
+          : `Verified Resolution (${updated.complaintId})`,
       message:
         decision === 'request_rework'
           ? 'Supervisor requested additional field rework to ensure quality.'
-          : 'Supervisor approved before/after evidence. View resolution photos and confirm in My Reports.',
+          : 'Resolution proof approved. Inspect photos and rate the resolution in My Reports.',
       relatedType: 'report',
       relatedId: updated.id,
     });
 
     broadcast(`citizen:${updated.reporterUid}`, 'report:updated', updated);
     broadcast('authority:all', 'report:updated', updated);
+    await maybeDispatchComplaintSms(updated, decision === 'request_rework' ? 'complaint_status_updated' : 'resolution_completed', approvalNotes);
 
     return res.json({ report: updated });
   });
@@ -1686,6 +2287,11 @@ async function startServer() {
   app.post('/api/authority/reports/:id/escalate', (req, res) => {
     const session = getAuthoritySession(getBearerToken(req));
     if (!session) return res.status(401).json({ error: 'Authorized department session required.' });
+    const target = getOperationalReportById(req.params.id);
+    if (!target) return res.status(404).json({ error: 'Report not found.' });
+    if (!canSessionAccessReport(session, target)) {
+      return res.status(403).json({ error: 'Access denied: Report belongs to another department or officer.' });
+    }
     const { level, reason } = req.body as { level?: 1 | 2 | 3; reason?: string };
     const escLevel: 1 | 2 | 3 = level === 3 ? 3 : level === 2 ? 2 : 1;
     if (!reason || reason.trim().length < 5) {
@@ -1693,7 +2299,7 @@ async function startServer() {
     }
     const targetRole =
       escLevel === 3
-        ? 'Platform Administrator / City Commissioner'
+        ? 'Platform Administrator / Senior Authority'
         : escLevel === 2
         ? 'Department Supervisor'
         : 'Assigned Officer / Duty Lead';
@@ -1701,6 +2307,8 @@ async function startServer() {
     const nowIso = new Date().toISOString();
     const updated = updateOperationalReport(req.params.id, (prev) => ({
       ...prev,
+      status: 'Escalated',
+      escalationLevel: Math.max(prev.escalationLevel || 0, escLevel) as 1 | 2 | 3,
       escalations: [
         ...(prev.escalations || []),
         {
@@ -1749,12 +2357,154 @@ async function startServer() {
     });
 
     broadcast('authority:all', 'report:updated', updated);
+    broadcast(`citizen:${updated.reporterUid}`, 'report:updated', updated);
     return res.json({ report: updated });
   });
 
   // =========================================================================
-  // 8. SEPARATE SOS, MEDICAL ASSISTANCE, ROAD ACCIDENT HELP & SMS GATEWAY
+  // 8. CAREGIVERS, DIRECT CALL LOGGING, SOS, MEDICAL ASSISTANCE & SMS GATEWAY
   // =========================================================================
+  app.get('/api/caregivers/:uid', (req, res) => {
+    if (rejectIfAuthorityToken(req, res)) return;
+    return res.json({ caregivers: getCaregiversByUid(req.params.uid) });
+  });
+
+  app.post('/api/caregivers', async (req, res) => {
+    if (rejectIfAuthorityToken(req, res)) return;
+    const { uid, citizenName, name, phone, relation, consentGiven } = req.body as {
+      uid?: string;
+      citizenName?: string;
+      name?: string;
+      phone?: string;
+      relation?: string;
+      consentGiven?: boolean;
+    };
+
+    if (!uid || !name?.trim() || !phone?.trim()) {
+      return res.status(400).json({ error: 'User ID, caregiver name, and phone number are required.' });
+    }
+    if (!consentGiven) {
+      return res.status(400).json({ error: 'Caregiver SMS notification consent is required.' });
+    }
+    const normalizedPhone = normalizePhoneE164(phone.trim());
+    if (!normalizedPhone) {
+      return res.status(400).json({
+        error: 'Invalid phone number. Enter a valid 10-digit Indian mobile or E.164 international number (e.g. +919876543210).',
+      });
+    }
+
+    const existingList = getCaregiversByUid(uid);
+    if (existingList.some((c) => c.phone === normalizedPhone)) {
+      return res.status(409).json({
+        error: `This phone number (${normalizedPhone}) is already saved as a caregiver contact.`,
+      });
+    }
+    if (existingList.length >= 5) {
+      return res.status(400).json({ error: 'Maximum 5 emergency caregiver contacts allowed.' });
+    }
+
+    const nowIso = new Date().toISOString();
+    const record = {
+      id: `cg_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+      uid,
+      name: name.trim().slice(0, 100),
+      phone: normalizedPhone,
+      relation: (relation || 'Family').trim().slice(0, 40),
+      consentGiven: true,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    const { record: saved } = upsertCaregiver(record);
+
+    const smsRes = await dispatchCaregiverSmsAlerts({
+      emergencyId: saved.id,
+      emergencyType: 'caregiver_added',
+      citizenName: citizenName || 'SEVA Citizen',
+      messageBody: `SEVA AI Caregiver Notice: ${citizenName || 'A SEVA AI user'} added you (${saved.name}) as a trusted emergency caregiver contact.`,
+      recipients: [{ name: saved.name, phone: saved.phone }],
+    });
+
+    return res.json({
+      caregiver: saved,
+      caregivers: getCaregiversByUid(uid),
+      smsDispatch: smsRes,
+    });
+  });
+
+  app.delete('/api/caregivers/:uid/:id', (req, res) => {
+    if (rejectIfAuthorityToken(req, res)) return;
+    const removed = deleteCaregiver(req.params.uid, req.params.id);
+    if (!removed) return res.status(404).json({ error: 'Caregiver contact not found.' });
+    return res.json({ deleted: true, caregivers: getCaregiversByUid(req.params.uid) });
+  });
+
+  app.post('/api/calls/log', (req, res) => {
+    if (rejectIfAuthorityToken(req, res)) return;
+    const { uid, caregiverId, caregiverName, caregiverPhone, source } = req.body as {
+      uid?: string;
+      caregiverId?: string;
+      caregiverName?: string;
+      caregiverPhone?: string;
+      source?: 'seva_shield' | 'medical_assistance' | 'emergency_helpline';
+    };
+    if (!uid || !caregiverPhone?.trim()) {
+      return res.status(400).json({ error: 'User ID and phone number are required to log a call attempt.' });
+    }
+    const normalized = normalizePhoneE164(caregiverPhone.trim()) || (/^(100|102|108|112|1091|1098)$/.test(caregiverPhone.trim()) ? caregiverPhone.trim() : null);
+    const entry = addCallLog({
+      uid,
+      caregiverId,
+      caregiverName: (caregiverName || 'Caregiver').slice(0, 80),
+      caregiverPhone: normalized || caregiverPhone.trim().slice(0, 20),
+      source: source || 'seva_shield',
+      status: normalized ? 'dialer_opened' : 'invalid_phone',
+    });
+    if (!normalized) {
+      return res.status(400).json({
+        error: 'Caregiver phone number is missing or invalid E.164 format. Update contact before calling.',
+        callLog: entry,
+      });
+    }
+    return res.json({ callLog: entry, telUri: `tel:${normalized}` });
+  });
+
+  app.get('/api/calls/:uid', (req, res) => {
+    if (rejectIfAuthorityToken(req, res)) return;
+    return res.json({ calls: getCallLogsByUid(req.params.uid).slice(0, 50) });
+  });
+
+  app.post('/api/authority/safety-alert', async (req, res) => {
+    const session = getAuthoritySession(getBearerToken(req));
+    if (!session) return res.status(401).json({ error: 'Authorized department session required.' });
+    const { citizenUid, citizenName, alertMessage, relatedId } = req.body as {
+      citizenUid?: string;
+      citizenName?: string;
+      alertMessage?: string;
+      relatedId?: string;
+    };
+    if (!citizenUid || !alertMessage?.trim()) {
+      return res.status(400).json({ error: 'Citizen UID and alert message are required.' });
+    }
+    const caregivers = getCaregiversByUid(citizenUid);
+    const smsRes = await dispatchCaregiverSmsAlerts({
+      emergencyId: relatedId || `alert_${Date.now()}`,
+      emergencyType: 'safety_alert',
+      citizenName: citizenName || 'SEVA Citizen',
+      messageBody: `SEVA SAFETY ALERT (${session.department}): ${alertMessage.trim().slice(0, 280)}`,
+      recipients: caregivers.map((c) => ({ name: c.name, phone: c.phone })),
+    });
+    addAuditLog({
+      actorUid: session.uid,
+      actorRole: session.role,
+      department: session.department,
+      action: 'safety_alert_sms',
+      targetId: relatedId || citizenUid,
+      detail: smsRes.summaryText,
+    });
+    return res.json({ smsDispatch: smsRes });
+  });
+
   app.post('/api/sos/sync', async (req, res) => {
     if (rejectIfAuthorityToken(req, res)) return;
     const sos = req.body;
@@ -1762,7 +2512,12 @@ async function startServer() {
       return res.status(400).json({ error: 'Invalid SOS payload.' });
     }
 
-    const recipients: CaregiverRecipient[] = Array.isArray(sos.contacts) ? sos.contacts : [];
+    const recipientsFromReq: CaregiverRecipient[] = Array.isArray(sos.contacts) ? sos.contacts : [];
+    const recipients =
+      recipientsFromReq.length > 0
+        ? recipientsFromReq
+        : getCaregiversByUid(sos.uid).map((c) => ({ name: c.name, phone: c.phone }));
+
     let smsSummaryText = sos.smsSummary || '';
     let smsLogs = sos.smsLogs;
 
@@ -1770,10 +2525,10 @@ async function startServer() {
       const mapsUrl = `https://www.openstreetmap.org/?mlat=${sos.lat}&mlon=${sos.lng}#map=16/${sos.lat}/${sos.lng}`;
       const smsMsg = `SEVA SHIELD SOS ALERT: ${sos.displayName || 'Citizen'} triggered an emergency SOS at ${
         sos.address || `${sos.lat}, ${sos.lng}`
-      }. Map: ${mapsUrl}`;
+      }. Live Map: ${mapsUrl}`;
       const smsRes = await dispatchCaregiverSmsAlerts({
         emergencyId: sos.id,
-        emergencyType: 'sos',
+        emergencyType: 'sos_activated',
         citizenName: sos.displayName || 'Citizen',
         messageBody: smsMsg,
         recipients,
@@ -1867,11 +2622,15 @@ async function startServer() {
     const id = `med_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
     const trackingId = `MED-${Math.floor(100000 + Math.random() * 900000)}`;
     const nowIso = new Date().toISOString();
-    const contactsList = Array.isArray(caregiverContacts) ? caregiverContacts : [];
+    const contactsFromReq = Array.isArray(caregiverContacts) ? caregiverContacts : [];
+    const contactsList =
+      contactsFromReq.length > 0
+        ? contactsFromReq
+        : getCaregiversByUid(uid).map((c) => ({ name: c.name, phone: c.phone }));
 
     const smsRes = await dispatchCaregiverSmsAlerts({
       emergencyId: id,
-      emergencyType: 'medical',
+      emergencyType: 'medical_request',
       citizenName: citizenName || 'Citizen',
       messageBody: `SEVA MEDICAL ALERT (${trackingId}): ${citizenName || 'Citizen'} requested ${
         severity || 'Urgent'
@@ -1940,124 +2699,6 @@ async function startServer() {
   app.get('/api/citizen/medical/:uid', (req, res) => {
     if (rejectIfAuthorityToken(req, res)) return;
     return res.json({ requests: getMedicalRequests(req.params.uid) });
-  });
-
-  app.post('/api/accident/create', async (req, res) => {
-    if (rejectIfAuthorityToken(req, res)) return;
-    const {
-      uid,
-      citizenName,
-      citizenEmail,
-      description,
-      severity,
-      peopleAffected,
-      lat,
-      lng,
-      accuracyMeters,
-      address,
-      photoUrls,
-      nearestHospital,
-      nearestPolice,
-      caregiverContacts,
-    } = req.body as {
-      uid?: string;
-      citizenName?: string;
-      citizenEmail?: string;
-      description?: string;
-      severity?: 'Moderate' | 'Severe' | 'Critical';
-      peopleAffected?: number;
-      lat?: number;
-      lng?: number;
-      accuracyMeters?: number;
-      address?: string;
-      photoUrls?: UploadedFileRef[];
-      nearestHospital?: string;
-      nearestPolice?: string;
-      caregiverContacts?: CaregiverRecipient[];
-    };
-
-    if (!uid || !description || description.trim().length < 5 || typeof lat !== 'number' || typeof lng !== 'number') {
-      return res.status(400).json({ error: 'Valid user ID, accident details, and coordinates are required.' });
-    }
-
-    const id = `acc_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
-    const trackingId = `ACC-${Math.floor(100000 + Math.random() * 900000)}`;
-    const nowIso = new Date().toISOString();
-    const contactsList = Array.isArray(caregiverContacts) ? caregiverContacts : [];
-
-    const smsRes = await dispatchCaregiverSmsAlerts({
-      emergencyId: id,
-      emergencyType: 'accident',
-      citizenName: citizenName || 'Citizen',
-      messageBody: `SEVA ROAD ACCIDENT ALERT (${trackingId}): ${citizenName || 'Citizen'} reported a ${
-        severity || 'Severe'
-      } accident (${peopleAffected || 1} person/people affected) at ${address || `${lat}, ${lng}`}.`,
-      recipients: contactsList,
-    });
-
-    const record: AccidentRequestRecord = {
-      id,
-      trackingId,
-      uid,
-      citizenName: (citizenName || 'Citizen').slice(0, 80),
-      citizenEmail: citizenEmail?.slice(0, 150),
-      description: description.trim().slice(0, 1200),
-      severity: severity === 'Moderate' || severity === 'Critical' ? severity : 'Severe',
-      peopleAffected: Math.max(1, Math.min(200, Number(peopleAffected) || 1)),
-      lat,
-      lng,
-      accuracyMeters,
-      address: (address || `${lat.toFixed(5)}, ${lng.toFixed(5)}`).slice(0, 300),
-      photoUrls: Array.isArray(photoUrls) ? photoUrls : [],
-      nearestHospital: nearestHospital?.slice(0, 200),
-      nearestPolice: nearestPolice?.slice(0, 200),
-      caregiverContactsCount: contactsList.length,
-      smsStatus: smsRes.summaryText,
-      status: 'Authority Notified',
-      timeline: [
-        { label: 'Road Accident Report Logged', actor: 'Citizen', timestamp: nowIso },
-        {
-          label: 'Emergency Control Room & Traffic Police Alerted',
-          actor: 'SEVA Emergency Router',
-          note: `${peopleAffected || 1} people affected`,
-          timestamp: nowIso,
-        },
-      ],
-      createdAt: nowIso,
-      updatedAt: nowIso,
-    };
-
-    const saved = upsertAccidentRequest(record);
-
-    pushNotification({
-      targetType: 'authority',
-      targetDepartment: 'Emergency Control Room',
-      type: 'road_accident',
-      priority: 'emergency',
-      title: `ROAD ACCIDENT (${trackingId}) · ${saved.severity}`,
-      message: `${saved.peopleAffected} affected · ${saved.address} · ${saved.description.slice(0, 100)}`,
-      relatedType: 'accident',
-      relatedId: saved.id,
-    });
-    pushNotification({
-      targetType: 'citizen',
-      targetUid: uid,
-      type: 'accident_created',
-      priority: 'high',
-      title: `Accident Alert ${trackingId} Dispatched`,
-      message: `Control Room alerted. ${smsRes.summaryText}`,
-      relatedType: 'accident',
-      relatedId: saved.id,
-    });
-
-    broadcast('authority:all', 'accident:new', saved);
-    broadcast(`citizen:${uid}`, 'accident:updated', saved);
-    return res.json({ accidentRequest: saved, smsDispatch: smsRes });
-  });
-
-  app.get('/api/citizen/accident/:uid', (req, res) => {
-    if (rejectIfAuthorityToken(req, res)) return;
-    return res.json({ requests: getAccidentRequests(req.params.uid) });
   });
 
   app.post('/api/authority/emergencies/:kind/:id/manage', (req, res) => {
@@ -2145,47 +2786,6 @@ async function startServer() {
       return res.json({ item: updated });
     }
 
-    if (kind === 'accident') {
-      const updated = updateAccidentRequest(id, (prev) => ({
-        ...prev,
-        status: (status as EmergencyRequestStatus) || prev.status,
-        assignedResponder: assignedResponder ?? prev.assignedResponder,
-        responseNotes: responseNotes ?? prev.responseNotes,
-        timeline: [
-          ...prev.timeline,
-          {
-            label: status || 'Emergency Unit Update',
-            actor: `${session.department} (${session.name})`,
-            note: responseNotes || undefined,
-            timestamp: nowIso,
-          },
-        ],
-        updatedAt: nowIso,
-      }));
-      if (!updated) return res.status(404).json({ error: 'Accident report not found.' });
-      addAuditLog({
-        actorUid: session.uid,
-        actorRole: session.role,
-        department: session.department,
-        action: `accident:${updated.status}`,
-        targetId: updated.trackingId,
-        detail: responseNotes || `Updated accident response to ${updated.status}`,
-      });
-      pushNotification({
-        targetType: 'citizen',
-        targetUid: updated.uid,
-        type: 'accident_update',
-        priority: 'emergency',
-        title: `Accident Alert ${updated.trackingId}: ${updated.status}`,
-        message: responseNotes || `Responder: ${updated.assignedResponder || session.name}`,
-        relatedType: 'accident',
-        relatedId: updated.id,
-      });
-      broadcast('authority:all', 'accident:updated', updated);
-      broadcast(`citizen:${updated.uid}`, 'accident:updated', updated);
-      return res.json({ item: updated });
-    }
-
     return res.status(400).json({ error: 'Unknown emergency category.' });
   });
 
@@ -2215,20 +2815,28 @@ async function startServer() {
 
     const messageSid = String(req.body?.MessageSid || req.body?.SmsSid || req.body?.messageId || '').trim();
     const rawStatus = String(req.body?.MessageStatus || req.body?.SmsStatus || req.body?.status || '').toLowerCase();
-    const errorCode = req.body?.ErrorCode ? `Twilio Error ${req.body.ErrorCode}` : undefined;
+    const rawErrorCode = req.body?.ErrorCode ? String(req.body.ErrorCode).trim() : '';
+    const rawErrorMessage = req.body?.ErrorMessage ? String(req.body.ErrorMessage).trim() : '';
+    const errorDetail = rawErrorCode
+      ? `Twilio Error ${rawErrorCode}${rawErrorMessage ? `: ${rawErrorMessage}` : ''}`
+      : rawErrorMessage || undefined;
 
     if (!messageSid || !rawStatus) {
       return res.status(400).json({ error: 'MessageSid and MessageStatus are required.' });
     }
 
-    const mappedStatus: 'sent' | 'pending' | 'failed' =
-      rawStatus === 'delivered' || rawStatus === 'sent'
+    const mappedStatus: 'queued' | 'sent' | 'delivered' | 'pending' | 'failed' =
+      rawStatus === 'delivered'
+        ? 'delivered'
+        : rawStatus === 'sent'
         ? 'sent'
+        : rawStatus === 'queued' || rawStatus === 'accepted' || rawStatus === 'sending'
+        ? 'queued'
         : rawStatus === 'failed' || rawStatus === 'undelivered' || rawStatus === 'canceled'
         ? 'failed'
         : 'pending';
 
-    const updatedLog = updateSmsLogByProviderId(messageSid, mappedStatus, errorCode);
+    const updatedLog = updateSmsLogByProviderId(messageSid, mappedStatus, errorDetail);
     if (updatedLog) {
       addAuditLog({
         actorUid: 'twilio_webhook',
@@ -2236,12 +2844,28 @@ async function startServer() {
         department: 'Emergency Control Room',
         action: `sms_webhook:${mappedStatus}`,
         targetId: updatedLog.emergencyId,
-        detail: `Provider SID ${messageSid} updated to ${rawStatus}${errorCode ? ` (${errorCode})` : ''}.`,
+        detail: `Provider SID ${messageSid} updated to ${rawStatus}${errorDetail ? ` (${errorDetail})` : ''}.`,
       });
       broadcast('authority:all', 'sms:updated', updatedLog);
     }
 
     return res.status(200).json({ received: true, status: mappedStatus, matched: Boolean(updatedLog) });
+  });
+
+  app.post('/api/authority/sms-logs/:id/refresh-status', async (req, res) => {
+    const session = getAuthoritySession(getBearerToken(req));
+    if (!session) return res.status(401).json({ error: 'Authorized department session required.' });
+
+    const existing = getSmsLogById(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ error: 'SMS log entry not found.' });
+    }
+    if (!existing.providerMessageId || existing.provider !== 'twilio_rest_api') {
+      return res.status(400).json({ error: 'SMS log entry does not have a Twilio Message SID to query.' });
+    }
+
+    const updated = await refreshTwilioSmsLogStatus(existing.id);
+    return res.json({ log: updated || existing });
   });
 
   // =========================================================================
@@ -2480,7 +3104,11 @@ async function startServer() {
   app.get('/api/authority/performance', (req, res) => {
     const session = getAuthoritySession(getBearerToken(req));
     if (!session) return res.status(401).json({ error: 'Authorized department session required.' });
-    return res.json(computePerformanceAndAnalytics());
+    const rawPeriod = String(req.query.period || 'all');
+    const period: '7d' | '30d' | '90d' | 'all' =
+      rawPeriod === '7d' || rawPeriod === '30d' || rawPeriod === '90d' ? rawPeriod : 'all';
+    const department = req.query.department ? String(req.query.department) : undefined;
+    return res.json(computePerformanceAndAnalytics({ period, department }));
   });
 
   // =========================================================================

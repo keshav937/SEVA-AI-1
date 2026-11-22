@@ -6,9 +6,9 @@ import {
   Bell,
   Building2,
   Camera,
-  Car,
   CheckCircle2,
   Clock,
+  ExternalLink,
   FileText,
   FileWarning,
   HeartPulse,
@@ -16,11 +16,13 @@ import {
   Layers,
   Lock,
   MapPin,
-  PawPrint,
+  PhoneCall,
   RefreshCw,
   Search,
+  Send,
   ShieldAlert,
   ShieldCheck,
+  Sliders,
   TrendingUp,
   UserCheck,
   UserPlus,
@@ -31,7 +33,6 @@ import { doc, getDoc, increment, serverTimestamp, setDoc, updateDoc } from 'fire
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../lib/firebase';
 import {
-  AccidentRequestRecord,
   AuthorityRole,
   CitizenComplaintAgainstAuthority,
   CivicReport,
@@ -40,7 +41,10 @@ import {
   OfficerPerformanceMetric,
   OfficerProfile,
   PlatformNotification,
+  REPORT_STATUS_FLOW,
   ReportStatus,
+  SeverityLevel,
+  SlaConfig,
   SmsLogEntry,
   SosEvent,
   UploadedFileRef,
@@ -53,8 +57,6 @@ type AuthorityModule =
   | 'verification'
   | 'sos'
   | 'medical'
-  | 'accident'
-  | 'animal_rescue'
   | 'assignments'
   | 'progress'
   | 'evidence'
@@ -65,6 +67,18 @@ type AuthorityModule =
   | 'notifications'
   | 'analytics'
   | 'logs';
+
+type ActionQueueKey =
+  | 'all'
+  | 'submitted'
+  | 'ai_pending'
+  | 'unassigned'
+  | 'high_critical'
+  | 'approaching_sla'
+  | 'overdue'
+  | 'escalated'
+  | 'awaiting_verification'
+  | 'reopened';
 
 const DEPARTMENTS = [
   'All Departments',
@@ -83,20 +97,23 @@ const DEPT_RECOMMENDATIONS: Record<string, string> = {
   'Waste Management': 'Municipal Corporation',
   'Blocked Drains and Waterlogging': 'Municipal Corporation',
   'Traffic and Road Obstructions': 'Traffic Police',
-  'Road Accident Reporting': 'Emergency Control Room',
   'Medical Assistance': 'Medical Services',
   'Women and Child Safety': 'Police Department',
   'Animal Rescue and Welfare': 'Animal Welfare & Rescue',
 };
 
+const CIVIC_CATEGORY_OPTIONS = Object.keys(DEPT_RECOMMENDATIONS);
+
 function mapOperationalToFirestoreStatus(
   status: ReportStatus
 ): 'Submitted' | 'Authority Acknowledged' | 'Assigned' | 'In Progress' | 'Resolved' | 'Rejected' {
-  if (status === 'Under Verification' || status === 'Verified') return 'Authority Acknowledged';
-  if (status === 'Awaiting Evidence' || status === 'Awaiting Authority Review' || status === 'Reopened') {
+  if (status === 'AI Verification Pending' || status === 'Verified') return 'Authority Acknowledged';
+  if (status === 'Resolved – Awaiting Verification' || status === 'Reopened' || status === 'Escalated') {
     return 'In Progress';
   }
-  return status as any;
+  if (status === 'Verified Resolution') return 'Resolved';
+  if (status === 'Rejected with reason') return 'Rejected';
+  return status;
 }
 
 function computeTierFromCount(verifiedCount: number): string {
@@ -121,10 +138,31 @@ function categoryBadgeFor(category: string): string | null {
       return 'Animal Welfare Champion';
     case 'Women and Child Safety':
       return 'Safety Hero';
-    case 'Road Accident Reporting':
-      return 'Emergency Response Contributor';
     default:
       return null;
+  }
+}
+
+function statusPillClass(status: ReportStatus): string {
+  switch (status) {
+    case 'Verified Resolution':
+      return 'bg-emerald-100 text-emerald-900 border-emerald-300';
+    case 'Resolved – Awaiting Verification':
+      return 'bg-teal-100 text-teal-900 border-teal-300';
+    case 'Rejected with reason':
+      return 'bg-red-100 text-red-900 border-red-300';
+    case 'Escalated':
+      return 'bg-rose-100 text-rose-900 border-rose-300';
+    case 'Reopened':
+      return 'bg-orange-100 text-orange-900 border-orange-300';
+    case 'AI Verification Pending':
+      return 'bg-amber-100 text-amber-900 border-amber-300';
+    case 'Verified':
+    case 'Assigned':
+    case 'In Progress':
+      return 'bg-blue-100 text-blue-900 border-blue-300';
+    default:
+      return 'bg-slate-100 text-slate-800 border-slate-300';
   }
 }
 
@@ -169,14 +207,17 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
   const [severityFilter, setSeverityFilter] = useState('All');
   const [categoryFilter, setCategoryFilter] = useState('All');
   const [searchQuery, setSearchQuery] = useState('');
-  const [quickFilter, setQuickFilter] = useState<'none' | 'overdue' | 'reopened' | 'emergency'>('none');
+  const [quickFilter, setQuickFilter] = useState<'none' | 'overdue' | 'reopened' | 'emergency' | 'escalated' | 'unassigned'>('none');
+  const [actionQueue, setActionQueue] = useState<ActionQueueKey>('all');
+  const [perfPeriod, setPerfPeriod] = useState<'7d' | '30d' | '90d' | 'all'>('all');
+  const [perfDept, setPerfDept] = useState('All Departments');
 
   // Core Operational Data
   const [reports, setReports] = useState<CivicReport[]>([]);
   const [stats, setStats] = useState<Record<string, number>>({});
+  const [slaConfig, setSlaConfig] = useState<SlaConfig | null>(null);
   const [sosEvents, setSosEvents] = useState<SosEvent[]>([]);
   const [medicalRequests, setMedicalRequests] = useState<MedicalRequestRecord[]>([]);
-  const [accidentRequests, setAccidentRequests] = useState<AccidentRequestRecord[]>([]);
   const [officers, setOfficers] = useState<OfficerProfile[]>([]);
   const [smsLogs, setSmsLogs] = useState<SmsLogEntry[]>([]);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
@@ -190,7 +231,6 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
       resolvedCount: number;
       resolutionRate: number;
       avgResolutionHours: number;
-      animalRescueTotal?: number;
       byCategory: Record<string, number>;
       byStatus: Record<string, number>;
       last7Days: Array<{ date: string; label: string; total: number; resolved: number }>;
@@ -207,6 +247,8 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
   // Verification Controls
   const [verifyNote, setVerifyNote] = useState('');
   const [evidenceRequestNote, setEvidenceRequestNote] = useState('');
+  const [overrideCategory, setOverrideCategory] = useState('');
+  const [overrideSeverity, setOverrideSeverity] = useState<SeverityLevel | ''>('');
 
   // Assignment Controls
   const [assignOfficerUid, setAssignOfficerUid] = useState('');
@@ -218,8 +260,10 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
   const [newOfficerDesignation, setNewOfficerDesignation] = useState('Junior Engineer');
   const [newOfficerRole, setNewOfficerRole] = useState<AuthorityRole>('authority');
 
-  // Work Progress & Resolution Evidence Gate
-  const [nextStatus, setNextStatus] = useState<ReportStatus>('Authority Acknowledged');
+  // Work Progress, Priority & Resolution Evidence Gate
+  const [nextStatus, setNextStatus] = useState<ReportStatus>('In Progress');
+  const [priorityChoice, setPriorityChoice] = useState<SeverityLevel>('Medium');
+  const [priorityReason, setPriorityReason] = useState('');
   const [workNote, setWorkNote] = useState('');
   const [beforePhotos, setBeforePhotos] = useState<UploadedFileRef[]>([]);
   const [afterPhotos, setAfterPhotos] = useState<UploadedFileRef[]>([]);
@@ -227,13 +271,18 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
   const [resolutionDesc, setResolutionDesc] = useState('');
   const [approvalNotes, setApprovalNotes] = useState('');
 
-  // Escalation Controls
+  // Escalation & SLA Config Controls
   const [escLevel, setEscLevel] = useState<1 | 2 | 3>(2);
   const [escReason, setEscReason] = useState('');
+  const [applySlaToOpen, setApplySlaToOpen] = useState(true);
 
-  // Emergency Dispatch Controls
+  // Emergency Dispatch & Safety Alert SMS Controls
   const [responderName, setResponderName] = useState('');
   const [responderNotes, setResponderNotes] = useState('');
+  const [expandedMedMapId, setExpandedMedMapId] = useState<string | null>(null);
+  const [safetyCitizenUid, setSafetyCitizenUid] = useState('');
+  const [safetyCitizenName, setSafetyCitizenName] = useState('');
+  const [safetyAlertMsg, setSafetyAlertMsg] = useState('');
 
   // Complaint Box Oversight Controls
   const [selectedComplaint, setSelectedComplaint] = useState<CitizenComplaintAgainstAuthority | null>(null);
@@ -273,21 +322,29 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
   const fetchAllAuthorityData = useCallback(async () => {
     if (!authoritySession) return;
     const headers = { Authorization: `Bearer ${authoritySession.token}` };
+    const isReportsModule = activeModule === 'reports';
     const qs = new URLSearchParams({
       fraudQueue: activeModule === 'verification' ? 'fraud_review' : 'all',
-      status: statusFilter,
-      severity: severityFilter,
-      category: categoryFilter,
-      search: searchQuery.trim(),
-      onlyOverdue: quickFilter === 'overdue' ? 'true' : 'false',
-      onlyReopened: quickFilter === 'reopened' ? 'true' : 'false',
-      onlyEmergency: quickFilter === 'emergency' ? 'true' : 'false',
+      status: isReportsModule ? statusFilter : 'All',
+      severity: isReportsModule ? severityFilter : 'All',
+      category: isReportsModule ? categoryFilter : 'All',
+      search: isReportsModule ? searchQuery.trim() : '',
+      onlyOverdue: isReportsModule && quickFilter === 'overdue' ? 'true' : 'false',
+      onlyReopened: isReportsModule && quickFilter === 'reopened' ? 'true' : 'false',
+      onlyEmergency: isReportsModule && quickFilter === 'emergency' ? 'true' : 'false',
+      onlyEscalated: isReportsModule && quickFilter === 'escalated' ? 'true' : 'false',
+      onlyUnassigned: isReportsModule && quickFilter === 'unassigned' ? 'true' : 'false',
+    });
+
+    const perfQs = new URLSearchParams({
+      period: perfPeriod,
+      ...(perfDept && perfDept !== 'All Departments' ? { department: perfDept } : {}),
     });
 
     try {
       const [repRes, perfRes, cmpRes, notifRes] = await Promise.all([
         fetch(`/api/authority/reports?${qs.toString()}`, { headers }),
-        fetch('/api/authority/performance', { headers }),
+        fetch(`/api/authority/performance?${perfQs.toString()}`, { headers }),
         fetch('/api/authority/complaints', { headers }),
         fetch('/api/notifications', { headers }),
       ]);
@@ -303,9 +360,11 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
         const nextReports: CivicReport[] = repData.reports || [];
         setReports(nextReports);
         setStats(repData.stats || {});
+        if (repData.slaConfig) {
+          setSlaConfig((prev) => prev || repData.slaConfig);
+        }
         setSosEvents(repData.sosEvents || []);
         setMedicalRequests(repData.medicalRequests || []);
-        setAccidentRequests(repData.accidentRequests || []);
         setOfficers(repData.officers || []);
         setSmsLogs(repData.smsLogs || []);
         setAuditLogs(repData.auditLogs || []);
@@ -340,6 +399,8 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
     authoritySession,
     categoryFilter,
     clearAuthoritySession,
+    perfDept,
+    perfPeriod,
     quickFilter,
     searchQuery,
     selectedComplaint,
@@ -388,7 +449,7 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
         createdAt: serverTimestamp(),
       });
 
-      if (rewardResolve && updated.status === 'Resolved' && updated.fraudQueueStatus !== 'rejected') {
+      if (rewardResolve && updated.status === 'Verified Resolution' && updated.fraudQueueStatus !== 'rejected') {
         const userSnap = await getDoc(doc(db, 'users', updated.reporterUid));
         const userData = userSnap.exists() ? userSnap.data() : null;
         const nextVerified = Number(userData?.verifiedReportsCount || 0) + 1;
@@ -498,6 +559,31 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
   };
 
   // Report Action Handlers
+  const handleRunLiveAiVerify = async (report: CivicReport) => {
+    if (!authHeaders) return;
+    setBusy(true);
+    setActionMsg(null);
+    setActionErr(null);
+    try {
+      const res = await fetch(`/api/authority/reports/${encodeURIComponent(report.id)}/ai-verify`, {
+        method: 'POST',
+        headers: authHeaders,
+      });
+      const data = await res.json();
+      if (data.report) setSelectedReport(data.report);
+      if (!res.ok) {
+        throw new Error(data.error || 'AI Verification service unavailable.');
+      }
+      setActionMsg(`AI Verification refreshed for ${data.report.complaintId} (Confidence ${data.report.aiConfidence ?? '—'}%).`);
+      await fetchAllAuthorityData();
+    } catch (err: any) {
+      setActionErr(err?.message || 'AI Verification failed.');
+      await fetchAllAuthorityData();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleVerifyDecision = async (
     report: CivicReport,
     decision: 'verify' | 'flag' | 'reject' | 'request_evidence'
@@ -514,6 +600,8 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
           decision,
           notes: verifyNote.trim() || undefined,
           requestEvidenceNote: decision === 'request_evidence' ? evidenceRequestNote.trim() : undefined,
+          overrideCategory: overrideCategory || undefined,
+          overrideSeverity: overrideSeverity || undefined,
         }),
       });
       const data = await res.json();
@@ -521,11 +609,37 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
       setSelectedReport(data.report);
       setVerifyNote('');
       setEvidenceRequestNote('');
+      setOverrideCategory('');
+      setOverrideSeverity('');
       setActionMsg(`Verification decision "${decision}" applied to ${data.report.complaintId}.`);
       await syncFirestoreSafe(data.report, `Verification: ${decision}`, verifyNote || evidenceRequestNote, false);
       await fetchAllAuthorityData();
     } catch (err: any) {
       setActionErr(err?.message || 'Verification request failed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleUpdatePriority = async (report: CivicReport) => {
+    if (!authHeaders) return;
+    setBusy(true);
+    setActionMsg(null);
+    setActionErr(null);
+    try {
+      const res = await fetch(`/api/authority/reports/${encodeURIComponent(report.id)}/priority`, {
+        method: 'PATCH',
+        headers: authHeaders,
+        body: JSON.stringify({ severity: priorityChoice, reason: priorityReason.trim() || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.report) throw new Error(data.error || 'Priority update failed.');
+      setSelectedReport(data.report);
+      setPriorityReason('');
+      setActionMsg(`Updated priority for ${data.report.complaintId} to ${data.report.severity} with recalculated SLA.`);
+      await fetchAllAuthorityData();
+    } catch (err: any) {
+      setActionErr(err?.message || 'Priority update failed.');
     } finally {
       setBusy(false);
     }
@@ -609,20 +723,30 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
     }
   };
 
-  const handleManageProgressOrEvidence = async (report: CivicReport, submitForApproval = false) => {
+  const handleManageProgressOrEvidence = async (
+    report: CivicReport,
+    submitForApproval = false,
+    explicitStatus?: ReportStatus
+  ) => {
     if (!authHeaders) return;
     setBusy(true);
     setActionMsg(null);
     setActionErr(null);
+    const chosenStatus: ReportStatus = submitForApproval
+      ? 'Resolved – Awaiting Verification'
+      : explicitStatus || nextStatus;
     try {
       const res = await fetch(`/api/authority/reports/${encodeURIComponent(report.id)}/manage`, {
         method: 'POST',
         headers: authHeaders,
         body: JSON.stringify({
-          status: submitForApproval ? 'Awaiting Authority Review' : nextStatus,
+          status: chosenStatus,
           actionNotes: workNote.trim() || undefined,
           resolutionNotes:
-            submitForApproval || nextStatus === 'Resolved' || nextStatus === 'Awaiting Authority Review'
+            submitForApproval ||
+            chosenStatus === 'Verified Resolution' ||
+            chosenStatus === 'Resolved – Awaiting Verification' ||
+            chosenStatus === 'Rejected with reason'
               ? workNote.trim() || resolutionDesc.trim()
               : undefined,
           beforePhotos: beforePhotos.length > 0 ? beforePhotos : undefined,
@@ -635,6 +759,7 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
       const data = await res.json();
       if (!res.ok || !data.report) throw new Error(data.error || 'Unable to save update.');
       setSelectedReport(data.report);
+      setNextStatus(data.report.status);
       setWorkNote('');
       setResolutionDesc('');
       setBeforePhotos([]);
@@ -645,7 +770,7 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
         data.report,
         data.report.status,
         data.report.resolutionNotes || data.report.actionNotes || 'Status updated',
-        data.report.status === 'Resolved'
+        data.report.status === 'Verified Resolution'
       );
       await fetchAllAuthorityData();
     } catch (err: any) {
@@ -708,7 +833,7 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
     }
   };
 
-  const handleManageEmergency = async (kind: 'sos' | 'medical' | 'accident', id: string, status: string) => {
+  const handleManageEmergency = async (kind: 'sos' | 'medical', id: string, status: string) => {
     if (!authHeaders) return;
     setBusy(true);
     setActionMsg(null);
@@ -730,6 +855,91 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
       await fetchAllAuthorityData();
     } catch (err: any) {
       setActionErr(err?.message || 'Unable to update emergency.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSaveSlaConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authHeaders || !slaConfig) return;
+    setBusy(true);
+    setActionMsg(null);
+    setActionErr(null);
+    try {
+      const res = await fetch('/api/authority/sla-config', {
+        method: 'PUT',
+        headers: authHeaders,
+        body: JSON.stringify({ slaConfig, applyToOpenReports: applySlaToOpen }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.slaConfig) throw new Error(data.error || 'Failed to save SLA rules.');
+      setSlaConfig(data.slaConfig);
+      setActionMsg(`Saved SLA configuration${applySlaToOpen ? ' and recalculated active complaints' : ''}.`);
+      await fetchAllAuthorityData();
+    } catch (err: any) {
+      setActionErr(err?.message || 'Unable to update SLA rules.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRefreshSmsStatus = async (logId: string) => {
+    if (!authHeaders) return;
+    setBusy(true);
+    setActionMsg(null);
+    setActionErr(null);
+    try {
+      const res = await fetch(`/api/authority/sms-logs/${encodeURIComponent(logId)}/refresh-status`, {
+        method: 'POST',
+        headers: authHeaders,
+      });
+      const data = await res.json();
+      if (!res.ok || !data.log) throw new Error(data.error || 'Unable to query Twilio delivery status.');
+      const updatedLog: SmsLogEntry = data.log;
+      setSmsLogs((prev) => prev.map((item) => (item.id === updatedLog.id ? updatedLog : item)));
+      setActionMsg(`Twilio status for ${updatedLog.recipientPhone}: ${updatedLog.status}${updatedLog.error ? ` (${updatedLog.error})` : ''}`);
+    } catch (err: any) {
+      setActionErr(err?.message || 'Failed to check Twilio SMS delivery status.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDispatchSafetyAlert = async (
+    citizenUidArg?: string,
+    citizenNameArg?: string,
+    msgArg?: string,
+    relatedIdArg?: string
+  ) => {
+    if (!authHeaders) return;
+    const targetUid = (citizenUidArg ?? safetyCitizenUid).trim();
+    const targetMsg = (msgArg ?? safetyAlertMsg).trim();
+    if (!targetUid || !targetMsg) {
+      setActionErr('Citizen UID and safety alert message are required.');
+      return;
+    }
+    setBusy(true);
+    setActionMsg(null);
+    setActionErr(null);
+    try {
+      const res = await fetch('/api/authority/safety-alert', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({
+          citizenUid: targetUid,
+          citizenName: (citizenNameArg ?? safetyCitizenName).trim() || undefined,
+          alertMessage: targetMsg,
+          relatedId: relatedIdArg,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Safety alert dispatch failed.');
+      setSafetyAlertMsg('');
+      setActionMsg(`Caregiver Safety Alert result: ${data.smsDispatch?.summaryText || 'Processed'}`);
+      await fetchAllAuthorityData();
+    } catch (err: any) {
+      setActionErr(err?.message || 'Failed to dispatch caregiver safety alert.');
     } finally {
       setBusy(false);
     }
@@ -784,11 +994,11 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
   const speakDashboardBriefing = () => {
     const summary = `Authority Operations Briefing for ${authoritySession?.department}. Total reports: ${
       stats.total ?? 0
-    }. Pending: ${stats.pending ?? 0}. Overdue SLA: ${stats.overdue ?? 0}. Active SOS: ${
-      stats.activeSos ?? 0
-    }, Medical: ${stats.activeMedical ?? 0}, Road Accidents: ${
-      stats.activeAccidents ?? 0
-    }. Pending verification: ${stats.underVerification ?? 0}.`;
+    }. Pending: ${stats.pending ?? 0}. Overdue SLA: ${stats.overdue ?? 0}. Escalated: ${
+      stats.escalated ?? 0
+    }. Active SOS: ${stats.activeSos ?? 0}, Medical Assistance: ${
+      stats.activeMedical ?? 0
+    }. Pending AI verification: ${stats.underVerification ?? 0}.`;
     onSpeakText(summary);
   };
 
@@ -1006,11 +1216,22 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
     );
   }
 
-  // Filter Animal Rescue reports cleanly
-  const animalRescueReports = reports.filter((r) => r.category === 'Animal Rescue and Welfare');
-  const awaitingApprovalReports = reports.filter((r) => r.status === 'Awaiting Authority Review');
+  const awaitingApprovalReports = reports.filter((r) => r.status === 'Resolved – Awaiting Verification');
+  const nowMs = Date.now();
+  const approachingSlaReports = reports.filter((r) => {
+    if (['Verified Resolution', 'Rejected with reason', 'Resolved – Awaiting Verification'].includes(r.status)) return false;
+    if (!r.slaDeadlineAt) return false;
+    const deadlineMs = new Date(r.slaDeadlineAt).getTime();
+    const createdMs = r.createdAt ? new Date(r.createdAt).getTime() : deadlineMs;
+    const remaining = deadlineMs - nowMs;
+    const totalWin = Math.max(1000, deadlineMs - createdMs);
+    return remaining > 0 && remaining <= totalWin * 0.25;
+  });
   const overdueReports = reports.filter(
-    (r) => r.status !== 'Resolved' && r.status !== 'Rejected' && r.slaDeadlineAt && new Date(r.slaDeadlineAt).getTime() < Date.now()
+    (r) =>
+      !['Verified Resolution', 'Rejected with reason', 'Resolved – Awaiting Verification'].includes(r.status) &&
+      r.slaDeadlineAt &&
+      new Date(r.slaDeadlineAt).getTime() < nowMs
   );
   const unreadNotifs = authNotifications.filter((n) => !n.read).length;
 
@@ -1020,15 +1241,13 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
     { id: 'verification', label: 'AI Verification', badge: stats.underVerification, icon: <ShieldCheck className="w-4 h-4" /> },
     { id: 'sos', label: 'SOS Alerts', badge: stats.activeSos, icon: <ShieldAlert className="w-4 h-4 text-red-600" /> },
     { id: 'medical', label: 'Medical Help', badge: stats.activeMedical, icon: <HeartPulse className="w-4 h-4 text-red-600" /> },
-    { id: 'accident', label: 'Road Accidents', badge: stats.activeAccidents, icon: <Car className="w-4 h-4 text-amber-700" /> },
-    { id: 'animal_rescue', label: 'Animal Rescue Hub', badge: animalRescueReports.length, icon: <PawPrint className="w-4 h-4 text-emerald-800" /> },
     { id: 'assignments', label: 'Officer Assignment', icon: <UserCheck className="w-4 h-4" /> },
-    { id: 'progress', label: 'Action Center & SLA', badge: stats.overdue, icon: <Clock className="w-4 h-4" /> },
+    { id: 'progress', label: 'Action Center & SLA', badge: (stats.overdue ?? 0) + (stats.escalated ?? 0), icon: <Clock className="w-4 h-4" /> },
     { id: 'evidence', label: 'Resolution & Proof', badge: stats.awaitingReview, icon: <Camera className="w-4 h-4" /> },
     { id: 'complaints', label: 'Citizen Complaints', badge: complaintsBox.filter((c) => c.status !== 'Closed' && c.status !== 'Resolved').length, icon: <FileWarning className="w-4 h-4" /> },
     { id: 'departments', label: 'Dept Performance', icon: <Building2 className="w-4 h-4" /> },
     { id: 'leaderboard', label: 'Officer Leaderboard', icon: <Award className="w-4 h-4" /> },
-    { id: 'escalations', label: 'SLA Escalations', icon: <AlertTriangle className="w-4 h-4" /> },
+    { id: 'escalations', label: 'SLA Escalations', badge: stats.escalated, icon: <AlertTriangle className="w-4 h-4" /> },
     { id: 'notifications', label: 'Notifications', badge: unreadNotifs, icon: <Bell className="w-4 h-4" /> },
     { id: 'analytics', label: 'Analytics & Charts', icon: <BarChart3 className="w-4 h-4" /> },
     { id: 'logs', label: 'Security, Audit & SMS', icon: <Lock className="w-4 h-4" /> },
@@ -1037,9 +1256,61 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
   const selectAndManageReport = (r: CivicReport, jumpTo?: AuthorityModule) => {
     setSelectedReport(r);
     setNextStatus(r.status);
+    setPriorityChoice(r.severity);
     setAssignDept(DEPT_RECOMMENDATIONS[r.category] || r.department);
     if (jumpTo) setActiveModule(jumpTo);
   };
+
+  const navigateWithFilter = (
+    mod: AuthorityModule,
+    opts?: {
+      status?: string;
+      quick?: 'none' | 'overdue' | 'reopened' | 'emergency' | 'escalated' | 'unassigned';
+      queue?: ActionQueueKey;
+    }
+  ) => {
+    setStatusFilter(opts?.status ?? 'All');
+    setSeverityFilter('All');
+    setCategoryFilter('All');
+    setSearchQuery('');
+    setQuickFilter(opts?.quick ?? 'none');
+    if (opts?.queue) setActionQueue(opts.queue);
+    setActiveModule(mod);
+  };
+
+  const actionQueueReports = useMemo(() => {
+    switch (actionQueue) {
+      case 'submitted':
+        return reports.filter((r) => r.status === 'Submitted');
+      case 'ai_pending':
+        return reports.filter(
+          (r) =>
+            r.status === 'AI Verification Pending' ||
+            r.verificationStatus === 'Flagged for Manual Review' ||
+            r.verificationStatus === 'Pending Verification'
+        );
+      case 'unassigned':
+        return reports.filter(
+          (r) => !r.assignedOfficer && !r.assignedOfficerUid && !['Verified Resolution', 'Rejected with reason'].includes(r.status)
+        );
+      case 'high_critical':
+        return reports.filter(
+          (r) => (r.severity === 'High' || r.severity === 'Critical') && !['Verified Resolution', 'Rejected with reason'].includes(r.status)
+        );
+      case 'approaching_sla':
+        return approachingSlaReports;
+      case 'overdue':
+        return overdueReports;
+      case 'escalated':
+        return reports.filter((r) => r.status === 'Escalated' || (r.escalations && r.escalations.length > 0));
+      case 'awaiting_verification':
+        return awaitingApprovalReports;
+      case 'reopened':
+        return reports.filter((r) => r.status === 'Reopened');
+      default:
+        return reports;
+    }
+  }, [actionQueue, approachingSlaReports, awaitingApprovalReports, overdueReports, reports]);
 
   return (
     <div className="space-y-6">
@@ -1093,7 +1364,7 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
         </div>
       )}
 
-      {/* Authority 17-Module Sidebar + Workspace */}
+      {/* Authority 15-Module Sidebar + Workspace */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left Navigation Sidebar */}
         <aside className="lg:col-span-3 border border-slate-200 rounded-xl bg-white p-2.5 space-y-1">
@@ -1132,23 +1403,71 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
             <div className="space-y-5">
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
                 {[
-                  { label: 'Total Reports', val: stats.total ?? 0, mod: 'reports' as AuthorityModule },
-                  { label: 'New Complaints', val: stats.newReports ?? 0, mod: 'reports' as AuthorityModule },
-                  { label: 'Pending / Active', val: stats.pending ?? 0, mod: 'progress' as AuthorityModule },
-                  { label: 'Overdue SLA', val: stats.overdue ?? 0, mod: 'escalations' as AuthorityModule },
-                  { label: 'Resolved', val: stats.resolved ?? 0, mod: 'evidence' as AuthorityModule },
-                  { label: 'Active SOS', val: stats.activeSos ?? 0, mod: 'sos' as AuthorityModule },
-                  { label: 'Medical Requests', val: stats.activeMedical ?? 0, mod: 'medical' as AuthorityModule },
-                  { label: 'Road Accidents', val: stats.activeAccidents ?? 0, mod: 'accident' as AuthorityModule },
-                  { label: 'Animal Rescue', val: animalRescueReports.length, mod: 'animal_rescue' as AuthorityModule },
-                  { label: 'AI Verification', val: stats.underVerification ?? 0, mod: 'verification' as AuthorityModule },
-                  { label: 'Awaiting Approval', val: stats.awaitingReview ?? 0, mod: 'evidence' as AuthorityModule },
-                  { label: 'Reopened Issues', val: stats.reopened ?? 0, mod: 'reports' as AuthorityModule },
+                  {
+                    label: 'Total Reports',
+                    val: stats.total ?? 0,
+                    onClick: () => navigateWithFilter('reports', { status: 'All', quick: 'none' }),
+                  },
+                  {
+                    label: 'New Submitted',
+                    val: stats.newReports ?? 0,
+                    onClick: () => navigateWithFilter('reports', { status: 'Submitted', quick: 'none' }),
+                  },
+                  {
+                    label: 'AI Verification',
+                    val: stats.underVerification ?? 0,
+                    onClick: () => navigateWithFilter('verification'),
+                  },
+                  {
+                    label: 'Pending / Active',
+                    val: stats.pending ?? 0,
+                    onClick: () => navigateWithFilter('progress', { queue: 'all' }),
+                  },
+                  {
+                    label: 'Unassigned',
+                    val: stats.unassigned ?? 0,
+                    onClick: () => navigateWithFilter('progress', { queue: 'unassigned' }),
+                  },
+                  {
+                    label: 'Overdue SLA',
+                    val: stats.overdue ?? 0,
+                    onClick: () => navigateWithFilter('progress', { queue: 'overdue' }),
+                  },
+                  {
+                    label: 'Escalated',
+                    val: stats.escalated ?? 0,
+                    onClick: () => navigateWithFilter('escalations'),
+                  },
+                  {
+                    label: 'Awaiting Verification',
+                    val: stats.awaitingReview ?? 0,
+                    onClick: () => navigateWithFilter('evidence'),
+                  },
+                  {
+                    label: 'Verified Resolution',
+                    val: stats.verifiedResolution ?? stats.resolved ?? 0,
+                    onClick: () => navigateWithFilter('reports', { status: 'Verified Resolution', quick: 'none' }),
+                  },
+                  {
+                    label: 'Reopened Issues',
+                    val: stats.reopened ?? 0,
+                    onClick: () => navigateWithFilter('reports', { status: 'Reopened', quick: 'reopened' }),
+                  },
+                  {
+                    label: 'Active SOS',
+                    val: stats.activeSos ?? 0,
+                    onClick: () => navigateWithFilter('sos'),
+                  },
+                  {
+                    label: 'Medical Requests',
+                    val: stats.activeMedical ?? 0,
+                    onClick: () => navigateWithFilter('medical'),
+                  },
                 ].map((k) => (
                   <button
                     key={k.label}
                     type="button"
-                    onClick={() => setActiveModule(k.mod)}
+                    onClick={k.onClick}
                     className="text-left border border-slate-200 rounded-xl bg-white p-3.5 hover:border-green-900 transition-colors"
                   >
                     <div className="text-xs text-slate-500">{k.label}</div>
@@ -1157,7 +1476,7 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
                 ))}
               </div>
 
-              {(stats.activeSos > 0 || stats.activeMedical > 0 || stats.activeAccidents > 0) && (
+              {(stats.activeSos > 0 || stats.activeMedical > 0) && (
                 <div className="border border-red-300 bg-red-50 rounded-xl p-4 space-y-2">
                   <div className="font-display text-sm font-bold text-red-900 flex items-center gap-2">
                     <ShieldAlert className="w-4 h-4" />
@@ -1180,15 +1499,6 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
                         className="px-3 py-1.5 bg-slate-900 text-white rounded-md font-medium"
                       >
                         Dispatch {stats.activeMedical} Medical Request(s)
-                      </button>
-                    )}
-                    {stats.activeAccidents > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setActiveModule('accident')}
-                        className="px-3 py-1.5 bg-amber-700 text-white rounded-md font-medium"
-                      >
-                        Respond to {stats.activeAccidents} Accident(s)
                       </button>
                     )}
                   </div>
@@ -1247,17 +1557,12 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
                     onChange={(e) => setStatusFilter(e.target.value)}
                     className="text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-white"
                   >
-                    <option value="All">Status: All</option>
-                    <option value="Submitted">New (Submitted)</option>
-                    <option value="Under Verification">Under Verification</option>
-                    <option value="Verified">Verified</option>
-                    <option value="Assigned">Assigned</option>
-                    <option value="In Progress">In Progress</option>
-                    <option value="Awaiting Evidence">Awaiting Evidence</option>
-                    <option value="Awaiting Authority Review">Awaiting Approval</option>
-                    <option value="Resolved">Resolved</option>
-                    <option value="Reopened">Reopened</option>
-                    <option value="Rejected">Rejected</option>
+                    <option value="All">Status: All (10 Stages)</option>
+                    {REPORT_STATUS_FLOW.map((st) => (
+                      <option key={st} value={st}>
+                        {st}
+                      </option>
+                    ))}
                   </select>
                   <select
                     value={severityFilter}
@@ -1276,7 +1581,7 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
                     className="text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-white"
                   >
                     <option value="All">Category: All</option>
-                    {Object.keys(DEPT_RECOMMENDATIONS).map((c) => (
+                    {CIVIC_CATEGORY_OPTIONS.map((c) => (
                       <option key={c} value={c}>
                         {c}
                       </option>
@@ -1284,28 +1589,41 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
                   </select>
                 </div>
 
-                <div className="flex flex-wrap gap-1.5 text-xs">
-                  {(
-                    [
-                      { id: 'none', label: 'All Reports' },
-                      { id: 'emergency', label: 'Emergency Alerts' },
-                      { id: 'overdue', label: 'Overdue SLA' },
-                      { id: 'reopened', label: 'Reopened Disputes' },
-                    ] as const
-                  ).map((chip) => (
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex flex-wrap gap-1.5">
+                    {(
+                      [
+                        { id: 'none', label: 'All Reports' },
+                        { id: 'emergency', label: 'Emergency Alerts' },
+                        { id: 'overdue', label: 'Overdue SLA' },
+                        { id: 'escalated', label: 'Escalated' },
+                        { id: 'unassigned', label: 'Unassigned' },
+                        { id: 'reopened', label: 'Reopened Disputes' },
+                      ] as const
+                    ).map((chip) => (
+                      <button
+                        key={chip.id}
+                        type="button"
+                        onClick={() => setQuickFilter(chip.id)}
+                        className={`px-2.5 py-1 rounded-md border ${
+                          quickFilter === chip.id
+                            ? 'bg-green-900 text-white border-green-900'
+                            : 'bg-slate-50 border-slate-200 text-slate-700'
+                        }`}
+                      >
+                        {chip.label}
+                      </button>
+                    ))}
+                  </div>
+                  {(statusFilter !== 'All' || severityFilter !== 'All' || categoryFilter !== 'All' || searchQuery || quickFilter !== 'none') && (
                     <button
-                      key={chip.id}
                       type="button"
-                      onClick={() => setQuickFilter(chip.id)}
-                      className={`px-2.5 py-1 rounded-md border ${
-                        quickFilter === chip.id
-                          ? 'bg-green-900 text-white border-green-900'
-                          : 'bg-slate-50 border-slate-200 text-slate-700'
-                      }`}
+                      onClick={() => navigateWithFilter('reports', { status: 'All', quick: 'none' })}
+                      className="text-slate-600 hover:text-slate-900 underline"
                     >
-                      {chip.label}
+                      Clear filters
                     </button>
-                  ))}
+                  )}
                 </div>
               </div>
 
@@ -1438,29 +1756,33 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
             <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
               <div className="xl:col-span-5 border border-slate-200 rounded-xl bg-white divide-y divide-slate-200">
                 <div className="p-3.5 text-xs font-semibold text-slate-700 bg-slate-50 rounded-t-xl">
-                  Seva Trust Verification Queue ({reports.length})
+                  Seva AI Verification Center ({reports.length})
                 </div>
                 {reports.length === 0 ? (
-                  <div className="p-8 text-center text-xs text-slate-500">No items currently flagged for review.</div>
+                  <div className="p-8 text-center text-xs text-slate-500">No items currently awaiting AI or manual verification.</div>
                 ) : (
                   reports.map((r) => (
                     <button
                       key={r.id}
                       type="button"
-                      onClick={() => setSelectedReport(r)}
+                      onClick={() => {
+                        setSelectedReport(r);
+                        setOverrideCategory('');
+                        setOverrideSeverity('');
+                      }}
                       className={`w-full text-left p-3.5 ${
                         selectedReport?.id === r.id ? 'bg-emerald-50/50' : 'hover:bg-slate-50'
                       }`}
                     >
-                      <div className="flex justify-between text-xs">
+                      <div className="flex justify-between text-xs gap-2">
                         <span className="font-mono font-semibold">{r.complaintId}</span>
                         <span className="font-mono text-amber-800">
-                          Risk {r.fraudRiskScore}/100 ({r.fraudRiskLevel})
+                          {typeof r.aiConfidence === 'number' ? `Conf ${r.aiConfidence}% · ` : ''}Risk {r.fraudRiskScore}/100 ({r.fraudRiskLevel})
                         </span>
                       </div>
                       <div className="text-sm font-medium text-slate-900 mt-0.5">{r.title}</div>
                       <div className="text-xs text-slate-500 mt-0.5">
-                        {r.verificationStatus || 'Pending Verification'} · {r.evidenceCompleteness || 'Partial'} Evidence
+                        {r.verificationStatus || 'Pending Verification'} · {r.aiRecommendedAction ? `AI: ${r.aiRecommendedAction}` : r.evidenceCompleteness || 'Partial Evidence'}
                       </div>
                     </button>
                   ))
@@ -1470,30 +1792,119 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
               <div className="xl:col-span-7 border border-slate-200 rounded-xl bg-white p-5 space-y-4">
                 {!selectedReport ? (
                   <div className="py-10 text-center text-xs text-slate-500">
-                    Select a report to inspect AI Verification probability, non-accusatory indicators, and confirm/flag/request evidence/reject.
+                    Select a complaint to inspect AI category detection, confidence score, duplicate check, submitted imagery, or run live AI verification.
                   </div>
                 ) : (
                   <>
-                    <div>
-                      <div className="font-mono text-xs text-slate-500">{selectedReport.complaintId}</div>
-                      <h3 className="font-display text-lg font-bold text-slate-900">{selectedReport.title}</h3>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="font-mono text-xs text-slate-500">
+                          Complaint ID: {selectedReport.complaintId} · {selectedReport.referenceNumber || selectedReport.id}
+                        </div>
+                        <h3 className="font-display text-lg font-bold text-slate-900">{selectedReport.title}</h3>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => handleRunLiveAiVerify(selectedReport)}
+                        className="px-3 py-1.5 bg-slate-900 text-white text-xs font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-50 inline-flex items-center gap-1.5"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        {selectedReport.aiVerifiedAt ? 'Re-run AI Verification' : 'Run Live AI Verification'}
+                      </button>
+                    </div>
+
+                    {selectedReport.aiVerificationError && (
+                      <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-900">
+                        <strong>AI Verification Notice:</strong> {selectedReport.aiVerificationError}
+                      </div>
+                    )}
+
+                    {(selectedReport.photoDataUrl || (selectedReport.photoUrls && selectedReport.photoUrls.length > 0)) && (
+                      <div className="space-y-1.5">
+                        <div className="text-xs font-semibold text-slate-700">Submitted Image Evidence</div>
+                        <div className="flex flex-wrap gap-2">
+                          {selectedReport.photoDataUrl && (
+                            <img
+                              src={selectedReport.photoDataUrl}
+                              alt="Citizen submitted evidence"
+                              className="w-48 h-32 object-cover rounded-lg border border-slate-200"
+                            />
+                          )}
+                          {(selectedReport.photoUrls || []).map((p) => (
+                            <img
+                              key={p.id}
+                              src={p.url}
+                              alt={p.originalName}
+                              className="w-48 h-32 object-cover rounded-lg border border-slate-200"
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl p-3.5">
+                      <div>
+                        <div className="text-slate-500">Selected Category</div>
+                        <div className="font-semibold text-slate-900 mt-0.5">{selectedReport.category}</div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500">AI-Detected Category</div>
+                        <div className="font-semibold text-slate-900 mt-0.5">
+                          {selectedReport.aiDetectedCategory || selectedReport.aiSuggestedCategory || 'Not analyzed yet'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500">Confidence Score</div>
+                        <div className="font-mono font-bold text-green-900 mt-0.5">
+                          {typeof selectedReport.aiConfidence === 'number' ? `${selectedReport.aiConfidence}%` : 'Pending'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500">Verification Status</div>
+                        <div className="font-semibold text-slate-900 mt-0.5">
+                          {selectedReport.verificationStatus || 'Pending Verification'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500">Recommended Action</div>
+                        <div className="font-semibold uppercase text-slate-900 mt-0.5">
+                          {selectedReport.aiRecommendedAction || 'Review'}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500">Risk / Evidence</div>
+                        <div className="font-mono font-semibold text-amber-800 mt-0.5">
+                          {selectedReport.fraudRiskScore}/100 ({selectedReport.fraudRiskLevel}) · {selectedReport.evidenceCompleteness || 'Partial'}
+                        </div>
+                      </div>
                     </div>
 
                     <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2 text-xs">
-                      <div className="flex flex-wrap justify-between gap-2 font-semibold text-slate-900">
-                        <span>
-                          Verification Risk Score: {selectedReport.fraudRiskScore}/100 ({selectedReport.fraudRiskLevel})
-                        </span>
-                        <span>
-                          Probability: {selectedReport.fraudProbability ?? selectedReport.fraudRiskScore}% · Evidence:{' '}
-                          {selectedReport.evidenceCompleteness || 'Partial'}
+                      <div>
+                        <span className="font-semibold text-slate-800">Duplicate Check: </span>
+                        <span className="text-slate-700">
+                          {selectedReport.aiDuplicateCheck || 'No duplicate analysis recorded yet.'}
                         </span>
                       </div>
-                      <p className="text-slate-700">{selectedReport.fraudExplanation}</p>
+                      <div>
+                        <span className="font-semibold text-slate-800">AI Explanation: </span>
+                        <span className="text-slate-700">
+                          {selectedReport.aiSummary || selectedReport.fraudExplanation || 'Run live AI verification to generate structured assessment.'}
+                        </span>
+                      </div>
+                      {selectedReport.fraudExplanation && selectedReport.aiSummary && (
+                        <p className="text-slate-600">{selectedReport.fraudExplanation}</p>
+                      )}
                       {selectedReport.recommendedActionText && (
                         <p className="text-green-900 font-medium">
                           Recommendation: {selectedReport.recommendedActionText}
                         </p>
+                      )}
+                      {selectedReport.aiMissingInfoFlags && selectedReport.aiMissingInfoFlags.length > 0 && (
+                        <div className="text-amber-900">
+                          <strong>Missing Info Flags:</strong> {selectedReport.aiMissingInfoFlags.join(', ')}
+                        </div>
                       )}
                       {selectedReport.fraudIndicators && selectedReport.fraudIndicators.length > 0 && (
                         <ul className="list-disc pl-4 text-amber-900 space-y-0.5">
@@ -1502,6 +1913,38 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
                           ))}
                         </ul>
                       )}
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">Override Category (Optional)</label>
+                        <select
+                          value={overrideCategory}
+                          onChange={(e) => setOverrideCategory(e.target.value)}
+                          className="w-full border border-slate-200 rounded-lg px-2.5 py-2 bg-white"
+                        >
+                          <option value="">Keep: {selectedReport.category}</option>
+                          {CIVIC_CATEGORY_OPTIONS.map((c) => (
+                            <option key={c} value={c}>
+                              {c}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">Override Priority (Optional)</label>
+                        <select
+                          value={overrideSeverity}
+                          onChange={(e) => setOverrideSeverity(e.target.value as SeverityLevel | '')}
+                          className="w-full border border-slate-200 rounded-lg px-2.5 py-2 bg-white"
+                        >
+                          <option value="">Keep: {selectedReport.severity}</option>
+                          <option value="Critical">Critical</option>
+                          <option value="High">High</option>
+                          <option value="Medium">Medium</option>
+                          <option value="Low">Low</option>
+                        </select>
+                      </div>
                     </div>
 
                     <div className="space-y-3">
@@ -1519,7 +1962,7 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
                           onClick={() => handleVerifyDecision(selectedReport, 'verify')}
                           className="py-2 bg-green-900 text-white text-xs font-semibold rounded-lg"
                         >
-                          Verify Report
+                          Accept (Verify Report)
                         </button>
                         <button
                           type="button"
@@ -1535,7 +1978,7 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
                           onClick={() => handleVerifyDecision(selectedReport, 'reject')}
                           className="py-2 bg-red-600 text-white text-xs font-semibold rounded-lg"
                         >
-                          Reject Report
+                          Reject with Reason
                         </button>
                       </div>
 
@@ -1616,6 +2059,22 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
                             {st.replace('_', ' ')}
                           </button>
                         ))}
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() =>
+                            handleDispatchSafetyAlert(
+                              s.uid,
+                              s.displayName,
+                              `SOS emergency update for ${s.displayName} near ${s.address || 'last known GPS'}. Responder status: ${s.status}.`,
+                              s.id
+                            )
+                          }
+                          className="px-2.5 py-1.5 bg-amber-600 text-white rounded-md inline-flex items-center gap-1"
+                        >
+                          <Send className="w-3 h-3" />
+                          Notify Caregivers via SMS
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -1628,15 +2087,21 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
           {activeModule === 'medical' && (
             <div className="border border-slate-200 rounded-xl bg-white p-5 space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="font-display text-lg font-bold text-slate-900">
-                  Medical Assistance Dispatch ({medicalRequests.length})
-                </h2>
+                <div>
+                  <h2 className="font-display text-lg font-bold text-slate-900">
+                    Medical Assistance Dispatch ({medicalRequests.length})
+                  </h2>
+                  <p className="text-xs text-slate-600">
+                    National Emergency Helplines: <span className="font-mono font-semibold">108</span> (Ambulance) ·{' '}
+                    <span className="font-mono font-semibold">112</span> (Unified Emergency). Live ambulance telemetry requires external EMS dispatch integration.
+                  </p>
+                </div>
                 <div className="flex gap-2">
                   <input
                     type="text"
                     value={responderName}
                     onChange={(e) => setResponderName(e.target.value)}
-                    placeholder="Ambulance / Medical team..."
+                    placeholder="Medical team / officer name..."
                     className="text-xs border border-slate-200 rounded-lg px-2.5 py-1.5"
                   />
                   <input
@@ -1654,17 +2119,87 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
               ) : (
                 <div className="space-y-3">
                   {medicalRequests.map((m) => (
-                    <div key={m.id} className="border border-slate-200 rounded-xl p-4 space-y-2 text-xs">
+                    <div key={m.id} className="border border-slate-200 rounded-xl p-4 space-y-2.5 text-xs">
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="font-mono font-bold text-slate-900">
-                          {m.trackingId} · {m.citizenName} ({m.severity})
-                        </span>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono font-bold text-slate-900">{m.trackingId}</span>
+                          <span className="font-semibold text-slate-900">{m.citizenName}</span>
+                          <span
+                            className={`px-2 py-0.5 rounded font-semibold ${
+                              m.severity === 'Critical' ? 'bg-red-100 text-red-900' : 'bg-amber-100 text-amber-900'
+                            }`}
+                          >
+                            {m.severity}
+                          </span>
+                        </div>
                         <span className="font-semibold text-green-900">{m.status}</span>
                       </div>
-                      <p className="text-slate-700">{m.condition}</p>
-                      <div className="text-slate-600">
-                        {m.address} · Nearest Hospital: {m.nearestHospital || 'Not specified'} · SMS: {m.smsStatus}
+
+                      <p className="text-sm text-slate-800 font-medium">{m.condition}</p>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-slate-600">
+                        <div>
+                          Location: <span className="text-slate-900">{m.address}</span>{' '}
+                          <span className="font-mono">
+                            ({m.lat.toFixed(5)}, {m.lng.toFixed(5)})
+                          </span>
+                        </div>
+                        <div>
+                          Nearest Hospital: <span className="text-slate-900">{m.nearestHospital || 'Not specified'}</span> · Caregivers:{' '}
+                          {m.caregiverContactsCount}
+                        </div>
+                        {(m.citizenPhone || m.citizenEmail) && (
+                          <div>
+                            Authorized Contact:{' '}
+                            {m.citizenPhone && (
+                              <a href={`tel:${m.citizenPhone}`} className="font-mono text-green-900 underline mr-2">
+                                {m.citizenPhone}
+                              </a>
+                            )}
+                            {m.citizenEmail && <span>{m.citizenEmail}</span>}
+                          </div>
+                        )}
+                        <div>SMS Gateway: {m.smsStatus}</div>
                       </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setExpandedMedMapId(expandedMedMapId === m.id ? null : m.id)}
+                          className="px-2.5 py-1 border border-slate-200 rounded-md text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1"
+                        >
+                          <MapPin className="w-3.5 h-3.5 text-green-900" />
+                          {expandedMedMapId === m.id ? 'Hide GPS Map' : 'View GPS Map'}
+                        </button>
+                        <a
+                          href={`https://www.openstreetmap.org/directions?to=${m.lat}%2C${m.lng}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="px-2.5 py-1 border border-slate-200 rounded-md text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          Route Directions
+                        </a>
+                        <a
+                          href="tel:108"
+                          className="px-2.5 py-1 bg-red-50 border border-red-200 text-red-900 rounded-md inline-flex items-center gap-1 font-medium"
+                        >
+                          <PhoneCall className="w-3 h-3" />
+                          Call 108
+                        </a>
+                      </div>
+
+                      {expandedMedMapId === m.id && (
+                        <LeafletMap
+                          centerLat={m.lat}
+                          centerLng={m.lng}
+                          zoom={15}
+                          userLat={m.lat}
+                          userLng={m.lng}
+                          heightClass="h-[180px]"
+                        />
+                      )}
+
                       <div className="flex flex-wrap gap-2 pt-1">
                         {(['Acknowledged', 'Responder Assigned', 'On the Way', 'Completed'] as const).map((st) => (
                           <button
@@ -1672,148 +2207,41 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
                             type="button"
                             disabled={busy}
                             onClick={() => handleManageEmergency('medical', m.id, st)}
-                            className="px-2.5 py-1.5 bg-green-900 text-white rounded-md"
+                            className={`px-2.5 py-1.5 rounded-md font-medium ${
+                              m.status === st ? 'bg-slate-900 text-white' : 'bg-green-900 text-white hover:bg-green-800'
+                            }`}
                           >
                             {st}
                           </button>
                         ))}
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() =>
+                            handleDispatchSafetyAlert(
+                              m.uid,
+                              m.citizenName,
+                              `Medical emergency ${m.trackingId} (${m.severity}) status: ${m.status}. Responder: ${responderName || authoritySession.name}.`,
+                              m.id
+                            )
+                          }
+                          className="px-2.5 py-1.5 bg-amber-600 text-white rounded-md inline-flex items-center gap-1"
+                        >
+                          <Send className="w-3 h-3" />
+                          SMS Caregivers
+                        </button>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
 
-          {/* MODULE 6: ROAD ACCIDENT ASSISTANCE */}
-          {activeModule === 'accident' && (
-            <div className="border border-slate-200 rounded-xl bg-white p-5 space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="font-display text-lg font-bold text-slate-900">
-                  Road Accident Response Queue ({accidentRequests.length})
-                </h2>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={responderName}
-                    onChange={(e) => setResponderName(e.target.value)}
-                    placeholder="Traffic / Trauma response unit..."
-                    className="text-xs border border-slate-200 rounded-lg px-2.5 py-1.5"
-                  />
-                  <input
-                    type="text"
-                    value={responderNotes}
-                    onChange={(e) => setResponderNotes(e.target.value)}
-                    placeholder="Scene response notes..."
-                    className="text-xs border border-slate-200 rounded-lg px-2.5 py-1.5"
-                  />
-                </div>
-              </div>
-
-              {accidentRequests.length === 0 ? (
-                <p className="text-xs text-slate-500 py-6 text-center">No road accident reports logged.</p>
-              ) : (
-                <div className="space-y-3">
-                  {accidentRequests.map((a) => (
-                    <div key={a.id} className="border border-slate-200 rounded-xl p-4 space-y-2 text-xs">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="font-mono font-bold text-slate-900">
-                          {a.trackingId} · {a.severity} ({a.peopleAffected} affected)
-                        </span>
-                        <span className="font-semibold text-amber-800">{a.status}</span>
-                      </div>
-                      <p className="text-slate-700">{a.description}</p>
-                      <div className="text-slate-600">
-                        {a.address} · SMS: {a.smsStatus}
-                      </div>
-                      {a.photoUrls && a.photoUrls.length > 0 && (
-                        <div className="flex gap-2 overflow-x-auto py-1">
-                          {a.photoUrls.map((p) => (
-                            <img
-                              key={p.id}
-                              src={p.url}
-                              alt="Accident scene"
-                              className="w-24 h-20 object-cover rounded border border-slate-200"
-                            />
+                      {m.timeline && m.timeline.length > 0 && (
+                        <div className="pt-2 border-t border-slate-200 space-y-1 text-[11px] text-slate-600">
+                          {m.timeline.slice(-3).map((t, i) => (
+                            <div key={i}>
+                              <strong>{t.label}</strong> ({t.actor}) · {new Date(t.timestamp).toLocaleString()}
+                              {t.note ? ` — ${t.note}` : ''}
+                            </div>
                           ))}
                         </div>
                       )}
-                      <div className="flex flex-wrap gap-2 pt-1">
-                        {(['Acknowledged', 'Responder Assigned', 'On the Way', 'Completed'] as const).map((st) => (
-                          <button
-                            key={st}
-                            type="button"
-                            disabled={busy}
-                            onClick={() => handleManageEmergency('accident', a.id, st)}
-                            className="px-2.5 py-1.5 bg-slate-900 text-white rounded-md"
-                          >
-                            {st}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* MODULE 7: ANIMAL RESCUE HUB */}
-          {activeModule === 'animal_rescue' && (
-            <div className="border border-slate-200 rounded-xl bg-white p-5 space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="font-display text-lg font-bold text-slate-900">
-                    Animal Welfare &amp; Rescue Hub ({animalRescueReports.length})
-                  </h2>
-                  <p className="text-xs text-slate-600">
-                    Dedicated queue for injured strays, wildlife distress, and Animal Rescue &amp; Welfare team dispatch.
-                  </p>
-                </div>
-              </div>
-
-              {animalRescueReports.length === 0 ? (
-                <p className="text-xs text-slate-500 py-8 text-center">
-                  No Animal Rescue &amp; Welfare reports are currently active.
-                </p>
-              ) : (
-                <div className="space-y-3">
-                  {animalRescueReports.map((r) => (
-                    <div key={r.id} className="border border-slate-200 rounded-xl p-4 space-y-2 text-xs">
-                      <div className="flex flex-wrap justify-between gap-2">
-                        <span className="font-mono font-semibold text-slate-900">
-                          {r.complaintId} · {r.severity}
-                        </span>
-                        <span className="font-semibold text-emerald-800">{r.status}</span>
-                      </div>
-                      <div className="text-sm font-semibold text-slate-900">{r.title}</div>
-                      <p className="text-slate-700">{r.description}</p>
-                      <div className="text-slate-500">
-                        {r.address} · Assigned Team: {r.assignedOfficer || 'Unassigned'}
-                      </div>
-                      <div className="flex flex-wrap gap-2 pt-1">
-                        <button
-                          type="button"
-                          onClick={() => selectAndManageReport(r, 'assignments')}
-                          className="px-3 py-1.5 bg-green-900 text-white rounded-md font-medium"
-                        >
-                          Assign Rescue Team
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => selectAndManageReport(r, 'progress')}
-                          className="px-3 py-1.5 bg-slate-900 text-white rounded-md font-medium"
-                        >
-                          Update Rescue Progress
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => selectAndManageReport(r, 'evidence')}
-                          className="px-3 py-1.5 border border-slate-300 text-slate-800 rounded-md font-medium"
-                        >
-                          Submit Rescue Before/After Photos
-                        </button>
-                      </div>
                     </div>
                   ))}
                 </div>
@@ -2011,90 +2439,203 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
             </div>
           )}
 
-          {/* MODULE 9: WORK PROGRESS & ACTION CENTER */}
+          {/* MODULE 9: ACTION CENTER & SLA WORK PROGRESS */}
           {activeModule === 'progress' && (
             <div className="space-y-5">
-              {overdueReports.length > 0 && (
-                <div className="border border-amber-300 bg-amber-50 rounded-xl p-4 space-y-2 text-xs">
-                  <div className="font-semibold text-amber-950">
-                    Overdue SLA Action Required ({overdueReports.length})
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {overdueReports.slice(0, 6).map((r) => (
+              <div className="border border-slate-200 rounded-xl bg-white p-4 space-y-3 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="font-display text-lg font-bold text-slate-900">
+                    Action Center &amp; 10-Stage SLA Queue
+                  </h2>
+                  {stats.activeMedical > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveModule('medical')}
+                      className="px-3 py-1.5 bg-red-600 text-white rounded-md font-semibold"
+                    >
+                      {stats.activeMedical} Active Medical Request(s) →
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap gap-1.5">
+                  {(
+                    [
+                      { id: 'all', label: `All (${reports.length})` },
+                      { id: 'submitted', label: `Newly Submitted (${reports.filter((r) => r.status === 'Submitted').length})` },
+                      { id: 'ai_pending', label: `AI Pending (${reports.filter((r) => r.status === 'AI Verification Pending').length})` },
+                      { id: 'unassigned', label: `Unassigned (${stats.unassigned ?? 0})` },
+                      { id: 'high_critical', label: `High / Critical (${reports.filter((r) => r.severity === 'High' || r.severity === 'Critical').length})` },
+                      { id: 'approaching_sla', label: `Approaching SLA (${approachingSlaReports.length})` },
+                      { id: 'overdue', label: `Overdue (${overdueReports.length})` },
+                      { id: 'escalated', label: `Escalated (${stats.escalated ?? 0})` },
+                      { id: 'awaiting_verification', label: `Resolved – Awaiting Verification (${awaitingApprovalReports.length})` },
+                      { id: 'reopened', label: `Reopened (${stats.reopened ?? 0})` },
+                    ] as Array<{ id: ActionQueueKey; label: string }>
+                  ).map((q) => (
+                    <button
+                      key={q.id}
+                      type="button"
+                      onClick={() => setActionQueue(q.id)}
+                      className={`px-2.5 py-1 rounded-md border ${
+                        actionQueue === q.id
+                          ? 'bg-green-900 text-white border-green-900'
+                          : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      {q.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="divide-y divide-slate-200 border border-slate-200 rounded-lg max-h-60 overflow-y-auto">
+                  {actionQueueReports.length === 0 ? (
+                    <div className="p-6 text-center text-slate-500">No complaints in this operational queue.</div>
+                  ) : (
+                    actionQueueReports.map((r) => (
                       <button
                         key={r.id}
                         type="button"
                         onClick={() => selectAndManageReport(r)}
-                        className="px-2.5 py-1 bg-white border border-amber-300 rounded-md font-mono text-amber-950"
+                        className={`w-full text-left p-3 flex flex-wrap items-center justify-between gap-2 ${
+                          selectedReport?.id === r.id ? 'bg-emerald-50/60' : 'hover:bg-slate-50'
+                        }`}
                       >
-                        {r.complaintId} ({r.status})
+                        <div>
+                          <div className="font-mono font-semibold text-slate-900">
+                            {r.complaintId} · {r.title}
+                          </div>
+                          <div className="text-slate-500 mt-0.5">
+                            {r.severity} · {r.department} · Officer: {r.assignedOfficer || 'Unassigned'}
+                            {r.escalationLevel ? ` · L${r.escalationLevel} Escalated` : ''}
+                          </div>
+                        </div>
+                        <span className={`px-2 py-0.5 rounded border text-[11px] font-semibold ${statusPillClass(r.status)}`}>
+                          {r.status}
+                        </span>
                       </button>
-                    ))}
-                  </div>
+                    ))
+                  )}
                 </div>
-              )}
+              </div>
 
-              <div className="border border-slate-200 rounded-xl bg-white p-5 space-y-4">
-                <h2 className="font-display text-lg font-bold text-slate-900">
-                  10-Stage Operational Work Progress
-                </h2>
-                <select
-                  value={selectedReport?.id || ''}
-                  onChange={(e) => {
-                    const found = reports.find((r) => r.id === e.target.value) || null;
-                    if (found) selectAndManageReport(found);
-                  }}
-                  className="w-full text-xs border border-slate-200 rounded-lg px-3 py-2 bg-white"
-                >
-                  <option value="">-- Select a complaint to progress --</option>
-                  {reports.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.complaintId} · {r.title} [{r.status}]
-                    </option>
-                  ))}
-                </select>
-
-                {selectedReport && (
-                  <div className="space-y-3 text-xs">
-                    <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
-                      Current Status: <strong>{selectedReport.status}</strong> · SLA Target:{' '}
-                      {selectedReport.slaDeadlineAt ? new Date(selectedReport.slaDeadlineAt).toLocaleString() : 'Standard'}
+              {selectedReport && (
+                <div className="border border-slate-200 rounded-xl bg-white p-5 space-y-4 text-xs">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <div className="font-mono text-slate-500">{selectedReport.complaintId}</div>
+                      <h3 className="font-display text-base font-bold text-slate-900">{selectedReport.title}</h3>
                     </div>
+                    <span className={`px-2.5 py-1 rounded border font-semibold ${statusPillClass(selectedReport.status)}`}>
+                      {selectedReport.status}
+                    </span>
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div>
+                      SLA Resolution Target:{' '}
+                      <strong className="font-mono">
+                        {selectedReport.slaDeadlineAt ? new Date(selectedReport.slaDeadlineAt).toLocaleString() : 'Standard'}
+                      </strong>
+                    </div>
+                    <div>
+                      Assigned Officer: <strong>{selectedReport.assignedOfficer || 'Unassigned'}</strong>
+                    </div>
+                    <div>
+                      Escalation Level: <strong>{selectedReport.escalationLevel ? `Level ${selectedReport.escalationLevel}` : 'None'}</strong>
+                    </div>
+                  </div>
+
+                  {/* Inline Priority Update */}
+                  <div className="border border-slate-200 rounded-lg p-3 space-y-2">
+                    <div className="font-semibold text-slate-800">Change Priority &amp; Recalculate SLA Target</div>
+                    <div className="flex flex-wrap gap-2">
+                      <select
+                        value={priorityChoice}
+                        onChange={(e) => setPriorityChoice(e.target.value as SeverityLevel)}
+                        className="border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white"
+                      >
+                        <option value="Critical">Critical</option>
+                        <option value="High">High</option>
+                        <option value="Medium">Medium</option>
+                        <option value="Low">Low</option>
+                      </select>
+                      <input
+                        type="text"
+                        value={priorityReason}
+                        onChange={(e) => setPriorityReason(e.target.value)}
+                        placeholder="Priority adjustment reason (optional)..."
+                        className="flex-1 min-w-[180px] border border-slate-200 rounded-lg px-3 py-1.5"
+                      />
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => handleUpdatePriority(selectedReport)}
+                        className="px-3.5 py-1.5 bg-slate-900 text-white font-semibold rounded-lg disabled:opacity-50"
+                      >
+                        Update Priority
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 10-Stage Status Progression */}
+                  <div className="space-y-2">
+                    <label className="font-semibold text-slate-800 block">Update Lifecycle Status (10 Exact Stages)</label>
                     <select
                       value={nextStatus}
                       onChange={(e) => setNextStatus(e.target.value as ReportStatus)}
                       className="w-full border border-slate-200 rounded-lg px-3 py-2 bg-white"
                     >
-                      <option value="Submitted">Submitted</option>
-                      <option value="Under Verification">Under Verification</option>
-                      <option value="Verified">Verified</option>
-                      <option value="Authority Acknowledged">Authority Acknowledged</option>
-                      <option value="Assigned">Assigned</option>
-                      <option value="In Progress">In Progress</option>
-                      <option value="Awaiting Evidence">Awaiting Evidence</option>
-                      <option value="Awaiting Authority Review">Awaiting Authority Review</option>
-                      <option value="Resolved">Resolved (Requires Before/After Photos)</option>
-                      <option value="Reopened">Reopened</option>
-                      <option value="Rejected">Rejected</option>
+                      {REPORT_STATUS_FLOW.map((st) => (
+                        <option key={st} value={st}>
+                          {st}
+                          {st === 'Resolved – Awaiting Verification' || st === 'Verified Resolution'
+                            ? ' (Requires After-Work Photo & Notes)'
+                            : ''}
+                        </option>
+                      ))}
                     </select>
                     <textarea
                       rows={2}
                       value={workNote}
                       onChange={(e) => setWorkNote(e.target.value)}
-                      placeholder="Field action update or inspection remarks..."
+                      placeholder="Field action update or inspection remarks (min 5 chars for rejection/resolution)..."
                       className="w-full border border-slate-200 rounded-lg px-3 py-2"
                     />
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => handleManageProgressOrEvidence(selectedReport, false)}
-                      className="px-4 py-2 bg-green-900 text-white text-xs font-semibold rounded-lg"
-                    >
-                      Save Progress &amp; Notify Citizen
-                    </button>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => handleManageProgressOrEvidence(selectedReport, false)}
+                        className="px-4 py-2 bg-green-900 text-white font-semibold rounded-lg"
+                      >
+                        Save Progress &amp; Notify Citizen
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => selectAndManageReport(selectedReport, 'assignments')}
+                        className="px-3 py-2 border border-slate-300 text-slate-800 rounded-lg font-medium"
+                      >
+                        Assign / Reassign
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => selectAndManageReport(selectedReport, 'evidence')}
+                        className="px-3 py-2 border border-slate-300 text-slate-800 rounded-lg font-medium"
+                      >
+                        Upload Proof Photos
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => selectAndManageReport(selectedReport, 'escalations')}
+                        className="px-3 py-2 border border-amber-300 bg-amber-50 text-amber-900 rounded-lg font-medium"
+                      >
+                        Escalate SLA
+                      </button>
+                    </div>
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -2103,10 +2644,10 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
             <div className="space-y-5">
               <div className="border border-slate-200 rounded-xl bg-white p-5 space-y-4">
                 <h2 className="font-display text-lg font-bold text-slate-900">
-                  Mandatory Before / After Resolution Evidence Gate
+                  Resolution Proof &amp; Verification Gate
                 </h2>
                 <p className="text-xs text-slate-600">
-                  Every resolution requires at least 1 Before-Work photo, 1 After-Work photo, and completion notes. Field officer submissions enter Supervisor/Admin Final Approval.
+                  Every resolution requires at least 1 After-Work / Resolution proof photo (plus optional Before-Work &amp; extra angles) and completion notes (min 5 chars). Uploaded submissions transition to &ldquo;Resolved – Awaiting Verification&rdquo; until verified by Supervisor/Admin or confirmed by the citizen.
                 </p>
 
                 <select
@@ -2130,7 +2671,7 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                       <label className="border border-dashed border-slate-300 rounded-lg p-3 cursor-pointer hover:bg-slate-50">
                         <div className="font-semibold text-slate-800">Before-Work Photos ({beforePhotos.length})</div>
-                        <div className="text-slate-500 mt-0.5">Upload site before repair</div>
+                        <div className="text-slate-500 mt-0.5">Optional site before repair</div>
                         <input
                           type="file"
                           accept="image/*"
@@ -2140,8 +2681,8 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
                         />
                       </label>
                       <label className="border border-dashed border-emerald-400 rounded-lg p-3 cursor-pointer hover:bg-emerald-50/40">
-                        <div className="font-semibold text-green-950">After-Work Photos ({afterPhotos.length})</div>
-                        <div className="text-slate-500 mt-0.5">Upload completed repair</div>
+                        <div className="font-semibold text-green-950">After-Work Photos ({afterPhotos.length}) *</div>
+                        <div className="text-slate-500 mt-0.5">Required completed repair proof</div>
                         <input
                           type="file"
                           accept="image/*"
@@ -2162,6 +2703,20 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
                         />
                       </label>
                     </div>
+
+                    {(beforePhotos.length > 0 || afterPhotos.length > 0 || extraResPhotos.length > 0) && (
+                      <div className="flex flex-wrap gap-2 bg-slate-50 border border-slate-200 rounded-lg p-3">
+                        {beforePhotos.map((p) => (
+                          <img key={p.id} src={p.url} alt="Before upload" className="w-20 h-16 object-cover rounded border border-slate-300" />
+                        ))}
+                        {afterPhotos.map((p) => (
+                          <img key={p.id} src={p.url} alt="After upload" className="w-20 h-16 object-cover rounded border-2 border-emerald-500" />
+                        ))}
+                        {extraResPhotos.map((p) => (
+                          <img key={p.id} src={p.url} alt="Extra upload" className="w-20 h-16 object-cover rounded border border-slate-300" />
+                        ))}
+                      </div>
+                    )}
 
                     <textarea
                       rows={2}
@@ -2184,19 +2739,16 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
                         onClick={() => handleManageProgressOrEvidence(selectedReport, true)}
                         className="px-4 py-2 bg-slate-900 text-white font-semibold rounded-lg"
                       >
-                        Submit Evidence for Final Approval
+                        Upload Proof → Resolved – Awaiting Verification
                       </button>
                       {(authoritySession.role === 'supervisor' || authoritySession.role === 'admin') && (
                         <button
                           type="button"
                           disabled={busy}
-                          onClick={() => {
-                            setNextStatus('Resolved');
-                            handleManageProgressOrEvidence(selectedReport, false);
-                          }}
+                          onClick={() => handleManageProgressOrEvidence(selectedReport, false, 'Verified Resolution')}
                           className="px-4 py-2 bg-green-900 text-white font-semibold rounded-lg"
                         >
-                          Upload Evidence &amp; Mark Resolved
+                          Upload Proof &amp; Mark Verified Resolution
                         </button>
                       )}
                     </div>
@@ -2386,13 +2938,36 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
             <div className="border border-slate-200 rounded-xl bg-white p-5 space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="font-display text-lg font-bold text-slate-900">Department Performance &amp; SLA Compliance</h2>
-                <button
-                  type="button"
-                  onClick={() => window.print()}
-                  className="px-3 py-1.5 border border-slate-200 text-xs font-medium rounded-lg hover:bg-slate-50"
-                >
-                  Print Dept Report
-                </button>
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <select
+                    value={perfPeriod}
+                    onChange={(e) => setPerfPeriod(e.target.value as '7d' | '30d' | '90d' | 'all')}
+                    className="border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white"
+                  >
+                    <option value="all">Period: All Time</option>
+                    <option value="7d">Last 7 Days</option>
+                    <option value="30d">Last 30 Days</option>
+                    <option value="90d">Last 90 Days</option>
+                  </select>
+                  <select
+                    value={perfDept}
+                    onChange={(e) => setPerfDept(e.target.value)}
+                    className="border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white"
+                  >
+                    {DEPARTMENTS.map((d) => (
+                      <option key={d} value={d}>
+                        {d}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    className="px-3 py-1.5 border border-slate-200 font-medium rounded-lg hover:bg-slate-50"
+                  >
+                    Print Dept Report
+                  </button>
+                </div>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs text-left">
@@ -2432,23 +3007,64 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
           {/* MODULE 13: AUTHORITY LEADERBOARD & RECOGNITION */}
           {activeModule === 'leaderboard' && (
             <div className="border border-slate-200 rounded-xl bg-white p-5 space-y-4">
-              <div>
-                <h2 className="font-display text-lg font-bold text-slate-900">
-                  Authority Performance Index &amp; Digital Badges
-                </h2>
-                <p className="text-xs text-slate-600">
-                  Evaluates resolved cases, Before/After evidence quality, SLA speed, citizen rating, and penalizes reopened or overdue complaints.
-                </p>
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <h2 className="font-display text-lg font-bold text-slate-900">
+                    Officer Performance Leaderboard &amp; Badges
+                  </h2>
+                  <p className="text-xs text-slate-600">
+                    Officers with zero handled cases receive a score of 0 and rank below active contributors. Qualification threshold: 2+ handled cases.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2 text-xs">
+                  <select
+                    value={perfPeriod}
+                    onChange={(e) => setPerfPeriod(e.target.value as '7d' | '30d' | '90d' | 'all')}
+                    className="border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white"
+                  >
+                    <option value="all">Period: All Time</option>
+                    <option value="7d">Last 7 Days</option>
+                    <option value="30d">Last 30 Days</option>
+                    <option value="90d">Last 90 Days</option>
+                  </select>
+                  <select
+                    value={perfDept}
+                    onChange={(e) => setPerfDept(e.target.value)}
+                    className="border border-slate-200 rounded-lg px-2.5 py-1.5 bg-white"
+                  >
+                    {DEPARTMENTS.map((d) => (
+                      <option key={d} value={d}>
+                        {d}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
+
               <div className="space-y-2.5">
                 {(perfData?.officerLeaderboard || []).map((o, idx) => (
                   <div key={o.uid} className="border border-slate-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3 text-xs">
                     <div>
-                      <div className="font-display text-sm font-bold text-slate-900">
-                        #{idx + 1} {o.name} · <span className="font-normal text-slate-600">{o.department}</span>
+                      <div className="flex flex-wrap items-center gap-2 font-display text-sm font-bold text-slate-900">
+                        <span>
+                          #{idx + 1} {o.name} · <span className="font-normal text-slate-600">{o.department}</span>
+                        </span>
+                        {o.totalHandled === 0 ? (
+                          <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-[11px] font-medium">
+                            No handled cases yet (Score: 0)
+                          </span>
+                        ) : o.qualifiedForRanking === false ? (
+                          <span className="px-2 py-0.5 bg-amber-50 border border-amber-200 text-amber-900 rounded text-[11px] font-medium">
+                            Provisional (&lt; 2 cases)
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded text-[11px] font-medium">
+                            Qualified
+                          </span>
+                        )}
                       </div>
                       <div className="text-slate-600 mt-0.5">
-                        Resolved: {o.resolvedCount} · Evidence Verified: {o.evidenceVerifiedCount} · Reopened Penalties:{' '}
+                        Handled: {o.totalHandled} · Resolved: {o.resolvedCount} · Evidence Verified: {o.evidenceVerifiedCount} · Reopened Penalties:{' '}
                         {o.reopenedCount} · Overdue: {o.overdueCount}
                       </div>
                       {o.badges.length > 0 && (
@@ -2463,7 +3079,7 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
                     </div>
                     <div className="text-right">
                       <div className="text-[11px] text-slate-500">Performance Index</div>
-                      <div className="font-mono text-2xl font-bold text-green-900">{o.performanceIndex}</div>
+                      <div className="font-mono text-2xl font-bold text-green-900 tabular-nums">{o.performanceIndex}</div>
                     </div>
                   </div>
                 ))}
@@ -2471,63 +3087,157 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
             </div>
           )}
 
-          {/* MODULE 14: 3-TIER ESCALATIONS */}
+          {/* MODULE 14: 3-TIER ESCALATIONS & ADMIN SLA RULES */}
           {activeModule === 'escalations' && (
-            <div className="border border-slate-200 rounded-xl bg-white p-5 space-y-4 text-xs">
-              <h2 className="font-display text-lg font-bold text-slate-900">
-                3-Tier SLA Escalation Console
-              </h2>
-              <select
-                value={selectedReport?.id || ''}
-                onChange={(e) => {
-                  const found = reports.find((r) => r.id === e.target.value) || null;
-                  if (found) selectAndManageReport(found);
-                }}
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 bg-white"
-              >
-                <option value="">-- Select complaint to escalate --</option>
-                {reports.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.complaintId} · {r.title} [{r.status}]
-                  </option>
-                ))}
-              </select>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="space-y-5 text-xs">
+              <div className="border border-slate-200 rounded-xl bg-white p-5 space-y-4">
+                <h2 className="font-display text-lg font-bold text-slate-900">
+                  3-Tier SLA Escalation Console
+                </h2>
                 <select
-                  value={escLevel}
-                  onChange={(e) => setEscLevel(Number(e.target.value) as 1 | 2 | 3)}
-                  className="border border-slate-200 rounded-lg px-2.5 py-2 bg-white"
+                  value={selectedReport?.id || ''}
+                  onChange={(e) => {
+                    const found = reports.find((r) => r.id === e.target.value) || null;
+                    if (found) selectAndManageReport(found);
+                  }}
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 bg-white"
                 >
-                  <option value={1}>Level 1: Duty Lead / Field Officer</option>
-                  <option value={2}>Level 2: Department Supervisor</option>
-                  <option value={3}>Level 3: Senior Admin / Commissioner</option>
-                </select>
-                <input
-                  type="text"
-                  value={escReason}
-                  onChange={(e) => setEscReason(e.target.value)}
-                  placeholder="Escalation justification (min 5 chars)..."
-                  className="sm:col-span-2 border border-slate-200 rounded-lg px-3 py-2"
-                />
-              </div>
-              <button
-                type="button"
-                disabled={!selectedReport || busy}
-                onClick={() => selectedReport && handleEscalateReport(selectedReport)}
-                className="px-4 py-2 bg-red-700 text-white font-semibold rounded-lg disabled:opacity-50"
-              >
-                Trigger Level {escLevel} Escalation
-              </button>
-
-              {selectedReport?.escalations && selectedReport.escalations.length > 0 && (
-                <div className="pt-3 border-t border-slate-200 space-y-1.5">
-                  <div className="font-semibold text-slate-800">Escalation History</div>
-                  {selectedReport.escalations.map((e) => (
-                    <div key={e.id} className="bg-red-50 border border-red-200 rounded p-2 text-red-950">
-                      <strong>Level {e.level}</strong> → {e.targetRole}: {e.reason} (by {e.escalatedBy})
-                    </div>
+                  <option value="">-- Select complaint to escalate --</option>
+                  {reports.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.complaintId} · {r.title} [{r.status}]
+                    </option>
                   ))}
+                </select>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <select
+                    value={escLevel}
+                    onChange={(e) => setEscLevel(Number(e.target.value) as 1 | 2 | 3)}
+                    className="border border-slate-200 rounded-lg px-2.5 py-2 bg-white"
+                  >
+                    <option value={1}>Level 1: Duty Lead / Field Officer</option>
+                    <option value={2}>Level 2: Department Supervisor</option>
+                    <option value={3}>Level 3: Senior Admin / Commissioner</option>
+                  </select>
+                  <input
+                    type="text"
+                    value={escReason}
+                    onChange={(e) => setEscReason(e.target.value)}
+                    placeholder="Escalation justification (min 5 chars)..."
+                    className="sm:col-span-2 border border-slate-200 rounded-lg px-3 py-2"
+                  />
                 </div>
+                <button
+                  type="button"
+                  disabled={!selectedReport || busy}
+                  onClick={() => selectedReport && handleEscalateReport(selectedReport)}
+                  className="px-4 py-2 bg-red-700 text-white font-semibold rounded-lg disabled:opacity-50"
+                >
+                  Trigger Level {escLevel} Escalation
+                </button>
+
+                {selectedReport?.escalations && selectedReport.escalations.length > 0 && (
+                  <div className="pt-3 border-t border-slate-200 space-y-1.5">
+                    <div className="font-semibold text-slate-800">Escalation History</div>
+                    {selectedReport.escalations.map((e) => (
+                      <div key={e.id} className="bg-red-50 border border-red-200 rounded p-2.5 text-red-950 flex flex-wrap justify-between gap-2">
+                        <div>
+                          <strong>L{e.level}</strong> → {e.targetRole}: {e.reason}{' '}
+                          <span className="font-medium">({e.automated ? 'Automated SLA Engine' : `Manual · ${e.escalatedBy}`})</span>
+                        </div>
+                        <span className="font-mono text-[11px]">{new Date(e.createdAt).toLocaleString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {slaConfig && (
+                <form onSubmit={handleSaveSlaConfig} className="border border-slate-200 rounded-xl bg-white p-5 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <Sliders className="w-4 h-4 text-green-900" />
+                      <h3 className="font-display text-base font-bold text-slate-900">
+                        Automated Background SLA Thresholds
+                      </h3>
+                    </div>
+                    <span className="text-slate-500">
+                      {authoritySession.role === 'admin' ? 'Admin Editable' : 'Read-only (Admin required to modify)'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    {(['Critical', 'High', 'Medium', 'Low'] as const).map((sev) => (
+                      <div key={sev} className="border border-slate-200 rounded-lg p-3 space-y-2">
+                        <div className="font-semibold text-slate-900">{sev} Priority</div>
+                        <div>
+                          <label className="text-[11px] text-slate-500 block">Response Target (mins)</label>
+                          <input
+                            type="number"
+                            step="0.05"
+                            min="0.01"
+                            disabled={authoritySession.role !== 'admin'}
+                            value={slaConfig.bySeverity[sev].responseMinutes}
+                            onChange={(e) =>
+                              setSlaConfig({
+                                ...slaConfig,
+                                bySeverity: {
+                                  ...slaConfig.bySeverity,
+                                  [sev]: {
+                                    ...slaConfig.bySeverity[sev],
+                                    responseMinutes: Number(e.target.value),
+                                  },
+                                },
+                              })
+                            }
+                            className="w-full border border-slate-200 rounded px-2 py-1 font-mono bg-white disabled:bg-slate-50"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] text-slate-500 block">Resolution SLA (mins)</label>
+                          <input
+                            type="number"
+                            step="0.05"
+                            min="0.01"
+                            disabled={authoritySession.role !== 'admin'}
+                            value={slaConfig.bySeverity[sev].resolutionMinutes}
+                            onChange={(e) =>
+                              setSlaConfig({
+                                ...slaConfig,
+                                bySeverity: {
+                                  ...slaConfig.bySeverity,
+                                  [sev]: {
+                                    ...slaConfig.bySeverity[sev],
+                                    resolutionMinutes: Number(e.target.value),
+                                  },
+                                },
+                              })
+                            }
+                            className="w-full border border-slate-200 rounded px-2 py-1 font-mono bg-white disabled:bg-slate-50"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {authoritySession.role === 'admin' && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                      <label className="inline-flex items-center gap-2 text-slate-700 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={applySlaToOpen}
+                          onChange={(e) => setApplySlaToOpen(e.target.checked)}
+                        />
+                        Recalculate SLA deadlines on open active complaints
+                      </label>
+                      <button
+                        type="submit"
+                        disabled={busy}
+                        className="px-4 py-2 bg-green-900 text-white font-semibold rounded-lg disabled:opacity-50"
+                      >
+                        Save SLA Rules
+                      </button>
+                    </div>
+                  )}
+                </form>
               )}
             </div>
           )}
@@ -2612,26 +3322,26 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                   <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
                     <div className="text-slate-500">Resolution Rate</div>
-                    <div className="font-mono text-2xl font-bold text-green-900 mt-1">
+                    <div className="font-mono text-2xl font-bold text-green-900 mt-1 tabular-nums">
                       {perfData.analytics.resolutionRate}%
                     </div>
                   </div>
                   <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
                     <div className="text-slate-500">Avg Resolution Time</div>
-                    <div className="font-mono text-2xl font-bold text-slate-900 mt-1">
+                    <div className="font-mono text-2xl font-bold text-slate-900 mt-1 tabular-nums">
                       {perfData.analytics.avgResolutionHours}h
                     </div>
                   </div>
                   <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
                     <div className="text-slate-500">Total Reports</div>
-                    <div className="font-mono text-2xl font-bold text-slate-900 mt-1">
+                    <div className="font-mono text-2xl font-bold text-slate-900 mt-1 tabular-nums">
                       {perfData.analytics.totalReports}
                     </div>
                   </div>
                   <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
-                    <div className="text-slate-500">Animal Rescue Cases</div>
-                    <div className="font-mono text-2xl font-bold text-slate-900 mt-1">
-                      {perfData.analytics.animalRescueTotal ?? animalRescueReports.length}
+                    <div className="text-slate-500">SLA Escalated</div>
+                    <div className="font-mono text-2xl font-bold text-rose-800 mt-1 tabular-nums">
+                      {stats.escalated ?? 0}
                     </div>
                   </div>
                 </div>
@@ -2708,8 +3418,46 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
                 <ul className="list-disc pl-5 text-slate-700 space-y-1">
                   <li>Strict Dashboard Separation: Citizen accounts cannot access Authority APIs (HTTP 401/403), and Authority Bearer sessions are blocked from Citizen mutations (HTTP 403).</li>
                   <li>Conflict-of-Interest Guard: Target officers cannot review, self-assign, or close citizen accountability complaints filed against themselves.</li>
-                  <li>Mandatory Resolution Evidence Gate: Before &amp; After photos + completion notes enforced server-side before case closure.</li>
+                  <li>Mandatory Resolution Evidence Gate: After-work proof photos + completion notes enforced server-side before resolution verification.</li>
                 </ul>
+              </div>
+
+              <div className="border border-slate-200 rounded-xl bg-white p-5 space-y-3">
+                <h3 className="font-display text-base font-bold text-slate-900">
+                  Send Caregiver Safety Alert SMS
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <input
+                    type="text"
+                    value={safetyCitizenUid}
+                    onChange={(e) => setSafetyCitizenUid(e.target.value)}
+                    placeholder="Citizen UID..."
+                    className="border border-slate-200 rounded-lg px-2.5 py-2"
+                  />
+                  <input
+                    type="text"
+                    value={safetyCitizenName}
+                    onChange={(e) => setSafetyCitizenName(e.target.value)}
+                    placeholder="Citizen Name (optional)..."
+                    className="border border-slate-200 rounded-lg px-2.5 py-2"
+                  />
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => handleDispatchSafetyAlert()}
+                    className="px-3 py-2 bg-green-900 text-white font-semibold rounded-lg inline-flex items-center justify-center gap-1.5"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    Dispatch Safety SMS
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  value={safetyAlertMsg}
+                  onChange={(e) => setSafetyAlertMsg(e.target.value)}
+                  placeholder="Safety alert message for registered caregivers..."
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2"
+                />
               </div>
 
               <div className="border border-slate-200 rounded-xl bg-white p-5 space-y-3">
@@ -2719,15 +3467,47 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
                 {smsLogs.length === 0 ? (
                   <p className="text-slate-500">No SMS alert dispatches logged yet.</p>
                 ) : (
-                  <div className="divide-y divide-slate-200 max-h-56 overflow-y-auto">
+                  <div className="divide-y divide-slate-200 max-h-72 overflow-y-auto">
                     {smsLogs.map((l) => (
-                      <div key={l.id} className="py-2 flex flex-wrap justify-between gap-2">
-                        <div>
+                      <div key={l.id} className="py-2.5 flex flex-wrap justify-between gap-2 items-center">
+                        <div className="min-w-0 flex-1">
                           <span className="font-mono font-semibold text-slate-900">{l.emergencyType.toUpperCase()}</span> ·{' '}
-                          {l.recipientName} ({l.recipientPhone}) · Status: <strong>{l.status}</strong>
-                          {l.error && <span className="text-red-700"> — {l.error}</span>}
+                          {l.recipientName} ({l.recipientPhone}){' '}
+                          <span className="ml-1 px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-mono text-[10px]">
+                            {l.provider}
+                          </span>
+                          <span
+                            className={`ml-1 px-1.5 py-0.5 rounded font-mono text-[10px] font-semibold ${
+                              l.status === 'delivered' || l.status === 'sent'
+                                ? 'bg-emerald-100 text-emerald-900'
+                                : l.status === 'queued' || l.status === 'pending'
+                                ? 'bg-amber-100 text-amber-900'
+                                : 'bg-red-100 text-red-900'
+                            }`}
+                          >
+                            {l.status}
+                          </span>
+                          {l.providerMessageId && (
+                            <span className="ml-1.5 font-mono text-[10px] text-slate-500">
+                              SID: {l.providerMessageId}
+                            </span>
+                          )}
+                          {l.error && <div className="text-xs text-red-700 mt-0.5">{l.error}</div>}
                         </div>
-                        <span className="font-mono text-slate-500">{new Date(l.updatedAt).toLocaleString()}</span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {l.provider === 'twilio_rest_api' && l.providerMessageId && (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => handleRefreshSmsStatus(l.id)}
+                              className="px-2 py-1 text-[11px] font-semibold border border-slate-300 rounded-md bg-slate-50 hover:bg-slate-100 text-slate-800 inline-flex items-center gap-1"
+                            >
+                              <RefreshCw className="w-3 h-3" />
+                              Check Status
+                            </button>
+                          )}
+                          <span className="font-mono text-xs text-slate-500">{new Date(l.updatedAt).toLocaleString()}</span>
+                        </div>
                       </div>
                     ))}
                   </div>

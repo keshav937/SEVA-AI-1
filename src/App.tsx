@@ -12,7 +12,6 @@ import { ProfilePrivacyView } from './components/ProfilePrivacyView';
 import { PublicTrackViewer } from './components/PublicTrackViewer';
 import { ReportIssueView } from './components/ReportIssueView';
 import { RewardsLeaderboardView } from './components/RewardsLeaderboardView';
-import { RoadAccidentView } from './components/RoadAccidentView';
 import { SafetyHeatmapView } from './components/SafetyHeatmapView';
 import { SevaSaathiPanel } from './components/SevaSaathiPanel';
 import { SevaShieldView } from './components/SevaShieldView';
@@ -33,7 +32,6 @@ const CITIZEN_NAV_ITEMS: Array<{ id: AppTab; label: string }> = [
   { id: 'report', label: 'Report Issue' },
   { id: 'shield', label: 'SOS' },
   { id: 'medical', label: 'Medical' },
-  { id: 'accident', label: 'Accident' },
   { id: 'complaints', label: 'Complaints' },
   { id: 'heatmap', label: 'Safety Map' },
   { id: 'rewards', label: 'Rewards' },
@@ -261,12 +259,35 @@ function SevaShell() {
           ...fsRep,
           referenceNumber: srv.referenceNumber || fsRep.referenceNumber,
           status: srv.status || fsRep.status,
+          severity: srv.severity || fsRep.severity,
+          category: srv.category || fsRep.category,
+          department: srv.department || fsRep.department,
           verificationStatus: srv.verificationStatus || fsRep.verificationStatus,
+          verificationNotes: srv.verificationNotes ?? fsRep.verificationNotes,
+          verifiedBy: srv.verifiedBy ?? fsRep.verifiedBy,
+          verifiedAt: srv.verifiedAt ?? fsRep.verifiedAt,
+          fraudRiskScore: srv.fraudRiskScore ?? fsRep.fraudRiskScore,
+          fraudRiskLevel: srv.fraudRiskLevel || fsRep.fraudRiskLevel,
+          fraudIndicators: srv.fraudIndicators || fsRep.fraudIndicators,
+          fraudExplanation: srv.fraudExplanation ?? fsRep.fraudExplanation,
           fraudQueueStatus: srv.fraudQueueStatus || fsRep.fraudQueueStatus,
+          aiSummary: srv.aiSummary ?? fsRep.aiSummary,
+          aiSuggestedCategory: srv.aiSuggestedCategory ?? fsRep.aiSuggestedCategory,
+          aiDetectedCategory: srv.aiDetectedCategory ?? fsRep.aiDetectedCategory,
+          aiSuggestedSeverity: srv.aiSuggestedSeverity ?? fsRep.aiSuggestedSeverity,
+          aiConfidence: srv.aiConfidence ?? fsRep.aiConfidence,
+          aiDuplicateCheck: srv.aiDuplicateCheck ?? fsRep.aiDuplicateCheck,
+          aiMissingInfoFlags: srv.aiMissingInfoFlags ?? fsRep.aiMissingInfoFlags,
+          aiRecommendedAction: srv.aiRecommendedAction ?? fsRep.aiRecommendedAction,
+          aiVerificationError: srv.aiVerificationError ?? fsRep.aiVerificationError,
+          aiVerifiedAt: srv.aiVerifiedAt ?? fsRep.aiVerifiedAt,
+          imageMatchesDescription: srv.imageMatchesDescription ?? fsRep.imageMatchesDescription,
+          detectedIssueFromImage: srv.detectedIssueFromImage ?? fsRep.detectedIssueFromImage,
           additionalEvidenceRequested: srv.additionalEvidenceRequested,
           additionalEvidenceRequestNote: srv.additionalEvidenceRequestNote,
           citizenEvidenceUploads: srv.citizenEvidenceUploads,
           assignedOfficer: srv.assignedOfficer ?? fsRep.assignedOfficer,
+          assignedOfficerUid: srv.assignedOfficerUid ?? fsRep.assignedOfficerUid,
           assignmentHistory: srv.assignmentHistory || fsRep.assignmentHistory,
           actionNotes: srv.actionNotes ?? fsRep.actionNotes,
           resolutionNotes: srv.resolutionNotes ?? fsRep.resolutionNotes,
@@ -274,9 +295,14 @@ function SevaShell() {
           citizenConfirmedResolution: srv.citizenConfirmedResolution,
           reopenReason: srv.reopenReason,
           disputeHistory: srv.disputeHistory,
+          escalations: srv.escalations,
+          escalationLevel: srv.escalationLevel,
           feedbackRating: srv.feedbackRating ?? fsRep.feedbackRating,
           feedbackComment: srv.feedbackComment ?? fsRep.feedbackComment,
           slaDeadlineAt: srv.slaDeadlineAt,
+          slaResponseDeadlineAt: srv.slaResponseDeadlineAt,
+          slaWarningSentAt: srv.slaWarningSentAt,
+          slaBreachedAt: srv.slaBreachedAt,
           timeline: srv.timeline || fsRep.timeline,
         });
       }
@@ -629,7 +655,6 @@ function SevaShell() {
         )}
         {activeTab === 'shield' && <SevaShieldView onSpeakText={handleSpeakText} />}
         {activeTab === 'medical' && <MedicalAssistanceView onSpeakText={handleSpeakText} />}
-        {activeTab === 'accident' && <RoadAccidentView onSpeakText={handleSpeakText} />}
         {activeTab === 'complaints' && <ComplaintBoxView myReports={myReports} />}
         {activeTab === 'heatmap' && <SafetyHeatmapView />}
         {activeTab === 'rewards' && <RewardsLeaderboardView />}

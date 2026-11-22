@@ -154,7 +154,6 @@ export const SafetyHeatmapView: React.FC = () => {
             <option value="Waste Management">Waste Management</option>
             <option value="Blocked Drains and Waterlogging">Blocked Drains and Waterlogging</option>
             <option value="Traffic and Road Obstructions">Traffic and Road Obstructions</option>
-            <option value="Road Accident Reporting">Road Accident Reporting</option>
             <option value="Women and Child Safety">Women and Child Safety</option>
             <option value="Animal Rescue and Welfare">Animal Rescue and Welfare</option>
           </select>

@@ -36,7 +36,6 @@ const CATEGORIES: CivicCategory[] = [
   'Waste Management',
   'Blocked Drains and Waterlogging',
   'Traffic and Road Obstructions',
-  'Road Accident Reporting',
   'Medical Assistance',
   'Women and Child Safety',
   'Animal Rescue and Welfare',
@@ -47,7 +46,6 @@ const DEPT_MAP: Record<string, string> = {
   'Waste Management': 'Municipal Corporation',
   'Blocked Drains and Waterlogging': 'Municipal Corporation',
   'Traffic and Road Obstructions': 'Traffic Police',
-  'Road Accident Reporting': 'Emergency Control Room',
   'Medical Assistance': 'Medical Services',
   'Women and Child Safety': 'Police Department',
   'Animal Rescue and Welfare': 'Animal Welfare & Rescue',
@@ -111,6 +109,11 @@ export const ReportIssueView: React.FC<ReportIssueViewProps> = ({
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [videoName, setVideoName] = useState<string>('');
   const [contactNote, setContactNote] = useState('');
+  const [reporterPhone, setReporterPhone] = useState(profile?.phone || '');
+  const [smsUpdatesOptIn, setSmsUpdatesOptIn] = useState(true);
+  const idempotencyKeyRef = useRef<string>(
+    `idem_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+  );
 
   // Manual place search fallback
   const [placeQuery, setPlaceQuery] = useState('');
@@ -152,6 +155,12 @@ export const ReportIssueView: React.FC<ReportIssueViewProps> = ({
       setManualAddress(address);
     }
   }, [address]);
+
+  useEffect(() => {
+    if (profile?.phone && !reporterPhone) {
+      setReporterPhone(profile.phone);
+    }
+  }, [profile?.phone]);
 
   useEffect(() => {
     if (!voiceDraft) return;
@@ -447,15 +456,14 @@ export const ReportIssueView: React.FC<ReportIssueViewProps> = ({
       return;
     }
 
+    if (submitting) return;
     setSubmitting(true);
     const complaintId = `SEVA-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
     const reportDocId = `rep_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const finalAddress = (manualAddress || address || `GPS (${lat.toFixed(5)}, ${lng.toFixed(5)})`).slice(0, 300);
 
     const isEmergency =
-      category === 'Medical Assistance' ||
-      category === 'Road Accident Reporting' ||
-      category === 'Women and Child Safety';
+      category === 'Medical Assistance' || category === 'Women and Child Safety';
     const isSensitive = category === 'Women and Child Safety';
     const department = DEPT_MAP[category] || 'Municipal Corporation';
 
@@ -542,10 +550,20 @@ export const ReportIssueView: React.FC<ReportIssueViewProps> = ({
         body: JSON.stringify({
           ...firestorePayload,
           id: reportDocId,
+          idempotencyKey: idempotencyKeyRef.current,
+          reporterPhone: reporterPhone.trim() || undefined,
+          smsUpdatesOptIn: Boolean(reporterPhone.trim() && smsUpdatesOptIn),
           photoUrls: uploadedPhotos,
           fraudProbability: analysis?.fraudProbability,
           evidenceCompleteness: analysis?.evidenceCompleteness,
           recommendedActionText: analysis?.recommendedActionText,
+          aiDetectedCategory: analysis?.aiDetectedCategory || analysis?.suggestedCategory,
+          aiDuplicateCheck: analysis?.duplicateCheckResult,
+          aiMissingInfoFlags: analysis?.missingInfoFlags,
+          aiRecommendedAction: analysis?.recommendedAction,
+          imageMatchesDescription: analysis?.imageMatchesDescription,
+          detectedIssueFromImage: analysis?.detectedIssueFromImage,
+          aiVerifiedAt: analysis ? nowIso : undefined,
           imageHash: analysis?.imageHash,
           timeline: [
             {
@@ -586,11 +604,12 @@ export const ReportIssueView: React.FC<ReportIssueViewProps> = ({
       const syncJson = await syncRes.json().catch(() => ({}));
 
       setSubmittedResult({
-        complaintId,
+        complaintId: syncJson.complaintId || complaintId,
         referenceNumber: syncJson.referenceNumber || `REF-${complaintId}`,
-        department,
-        fraudQueueStatus,
+        department: syncJson.report?.department || department,
+        fraudQueueStatus: syncJson.report?.fraudQueueStatus || fraudQueueStatus,
       });
+      idempotencyKeyRef.current = `idem_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
       setTitle('');
       setDescription('');
       setPhotoDataUrl('');
@@ -1127,17 +1146,40 @@ export const ReportIssueView: React.FC<ReportIssueViewProps> = ({
             </div>
           )}
 
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Optional Follow-up Preference
-            </label>
-            <input
-              type="text"
-              value={contactNote}
-              onChange={(e) => setContactNote(e.target.value)}
-              placeholder="Preferred inspection timing (stored privately, never shown publicly)"
-              className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 text-slate-900"
-            />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                SMS Status Updates Phone (Optional)
+              </label>
+              <input
+                type="tel"
+                value={reporterPhone}
+                onChange={(e) => setReporterPhone(e.target.value)}
+                placeholder="+91 9876543210"
+                className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 text-slate-900"
+              />
+              <label className="mt-1.5 flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={smsUpdatesOptIn}
+                  onChange={(e) => setSmsUpdatesOptIn(e.target.checked)}
+                  className="rounded border-slate-300 text-green-900"
+                />
+                <span>Send Twilio SMS updates on verification, assignment &amp; resolution</span>
+              </label>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Optional Follow-up Preference
+              </label>
+              <input
+                type="text"
+                value={contactNote}
+                onChange={(e) => setContactNote(e.target.value)}
+                placeholder="Preferred inspection timing (stored privately)"
+                className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 text-slate-900"
+              />
+            </div>
           </div>
 
           {/* Step 1: AI & Seva Trust Screening */}

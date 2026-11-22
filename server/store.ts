@@ -4,24 +4,47 @@ import path from 'path';
 
 export type AuthorityRole = 'authority' | 'supervisor' | 'admin';
 
-export type OperationalReportStatus =
-  | 'Submitted'
-  | 'Under Verification'
-  | 'Verified'
-  | 'Authority Acknowledged'
-  | 'Assigned'
-  | 'In Progress'
-  | 'Awaiting Evidence'
-  | 'Awaiting Authority Review'
-  | 'Resolved'
-  | 'Rejected'
-  | 'Reopened';
+export const OPERATIONAL_REPORT_STATUSES = [
+  'Submitted',
+  'AI Verification Pending',
+  'Verified',
+  'Rejected with reason',
+  'Assigned',
+  'In Progress',
+  'Resolved – Awaiting Verification',
+  'Verified Resolution',
+  'Reopened',
+  'Escalated',
+] as const;
+
+export type OperationalReportStatus = (typeof OPERATIONAL_REPORT_STATUSES)[number];
+
+export const CLOSED_REPORT_STATUSES: ReadonlySet<string> = new Set([
+  'Verified Resolution',
+  'Rejected with reason',
+]);
+
+export const SLA_PAUSED_OR_CLOSED_STATUSES: ReadonlySet<string> = new Set([
+  'Resolved – Awaiting Verification',
+  'Verified Resolution',
+  'Rejected with reason',
+]);
 
 export type VerificationStatus =
   | 'Pending Verification'
   | 'Verified'
   | 'Flagged for Manual Review'
   | 'Rejected';
+
+export type SmsEventType =
+  | 'caregiver_added'
+  | 'sos_activated'
+  | 'medical_request'
+  | 'complaint_status_updated'
+  | 'resolution_completed'
+  | 'safety_alert'
+  | 'sos'
+  | 'medical';
 
 export interface UploadedFileRef {
   id: string;
@@ -67,8 +90,19 @@ export interface EscalationRecord {
   targetRole: string;
   reason: string;
   escalatedBy: string;
+  automated?: boolean;
   status: 'open' | 'acknowledged' | 'resolved';
   createdAt: string;
+}
+
+export interface SlaRule {
+  responseMinutes: number;
+  resolutionMinutes: number;
+}
+
+export interface SlaConfig {
+  bySeverity: Record<'Low' | 'Medium' | 'High' | 'Critical', SlaRule>;
+  byCategoryOverride: Record<string, Partial<Record<'Low' | 'Medium' | 'High' | 'Critical', SlaRule>>>;
 }
 
 export interface OfficerProfile {
@@ -111,8 +145,11 @@ export interface OperationalReportRecord {
   id: string;
   complaintId: string;
   referenceNumber?: string;
+  idempotencyKey?: string;
   reporterUid: string;
   reporterDisplayName: string;
+  reporterPhone?: string;
+  smsUpdatesOptIn?: boolean;
   category: string;
   title: string;
   description: string;
@@ -135,8 +172,16 @@ export interface OperationalReportRecord {
   videoName?: string;
   aiSummary?: string;
   aiSuggestedCategory?: string;
+  aiDetectedCategory?: string;
   aiSuggestedSeverity?: string;
   aiConfidence?: number;
+  aiDuplicateCheck?: string;
+  aiMissingInfoFlags?: string[];
+  aiRecommendedAction?: 'accept' | 'flag' | 'reject';
+  aiVerificationError?: string;
+  aiVerifiedAt?: string;
+  imageMatchesDescription?: boolean;
+  detectedIssueFromImage?: string;
   fraudRiskScore: number;
   fraudProbability?: number;
   fraudRiskLevel: 'Low' | 'Moderate' | 'High' | 'Critical';
@@ -166,8 +211,11 @@ export interface OperationalReportRecord {
     createdAt: string;
   }>;
   escalations?: EscalationRecord[];
+  escalationLevel?: 0 | 1 | 2 | 3;
   slaDeadlineAt?: string;
   slaResponseDeadlineAt?: string;
+  slaWarningSentAt?: string;
+  slaBreachedAt?: string;
   feedbackRating?: number;
   feedbackComment?: string;
   timeline: Array<{
@@ -184,17 +232,39 @@ export interface OperationalReportRecord {
 export interface SmsLogEntry {
   id: string;
   emergencyId: string;
-  emergencyType: 'sos' | 'medical' | 'accident';
+  emergencyType: SmsEventType;
   recipientName: string;
   recipientPhone: string;
   message: string;
   provider: string;
-  status: 'sent' | 'pending' | 'failed' | 'not_configured';
+  status: 'queued' | 'sent' | 'delivered' | 'pending' | 'failed' | 'not_configured';
   attempts: number;
   providerMessageId?: string;
   error?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CaregiverRecord {
+  id: string;
+  uid: string;
+  name: string;
+  phone: string;
+  relation: string;
+  consentGiven: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CallLogEntry {
+  id: string;
+  uid: string;
+  caregiverId?: string;
+  caregiverName: string;
+  caregiverPhone: string;
+  source: 'seva_shield' | 'medical_assistance' | 'emergency_helpline';
+  status: 'dialer_opened' | 'invalid_phone';
+  createdAt: string;
 }
 
 export interface OperationalSosRecord {
@@ -251,32 +321,6 @@ export interface MedicalRequestRecord {
   updatedAt: string;
 }
 
-export interface AccidentRequestRecord {
-  id: string;
-  trackingId: string;
-  uid: string;
-  citizenName: string;
-  citizenEmail?: string;
-  description: string;
-  severity: 'Moderate' | 'Severe' | 'Critical';
-  peopleAffected: number;
-  lat: number;
-  lng: number;
-  accuracyMeters?: number;
-  address: string;
-  photoUrls: UploadedFileRef[];
-  nearestHospital?: string;
-  nearestPolice?: string;
-  caregiverContactsCount: number;
-  smsStatus: string;
-  status: EmergencyRequestStatus;
-  assignedResponder?: string;
-  responseNotes?: string;
-  timeline: Array<{ label: string; actor: string; note?: string; timestamp: string }>;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export type ComplaintBoxStatus =
   | 'Submitted'
   | 'Under Supervisor Review'
@@ -318,7 +362,7 @@ export interface PlatformNotification {
   priority: 'normal' | 'high' | 'emergency';
   title: string;
   message: string;
-  relatedType?: 'report' | 'sos' | 'medical' | 'accident' | 'complaint' | 'escalation';
+  relatedType?: 'report' | 'sos' | 'medical' | 'complaint' | 'escalation';
   relatedId?: string;
   read: boolean;
   createdAt: string;
@@ -351,12 +395,15 @@ interface PersistedState {
   sessionSecret?: string;
   authorityPasscodeHash?: string;
   authorityPasscodeSalt?: string;
+  slaConfig?: SlaConfig;
+  idempotencyKeys?: Record<string, string>;
   reports: OperationalReportRecord[];
   sosEvents: OperationalSosRecord[];
   medicalRequests: MedicalRequestRecord[];
-  accidentRequests: AccidentRequestRecord[];
   citizenComplaints: CitizenComplaintAgainstAuthority[];
   officers: OfficerProfile[];
+  caregivers: CaregiverRecord[];
+  callLogs: CallLogEntry[];
   notifications: PlatformNotification[];
   smsLogs: SmsLogEntry[];
   auditLogs: AuditLogEntry[];
@@ -369,25 +416,79 @@ const DATA_FILE = path.join(DATA_DIR, 'seva-operational.json');
 const activeTracking = new Map<string, LiveTrackingRecord>();
 const authoritySessions = new Map<string, AuthoritySession>();
 
+export const DEFAULT_SLA_CONFIG: SlaConfig = {
+  bySeverity: {
+    Critical: { responseMinutes: 60, resolutionMinutes: 360 },
+    High: { responseMinutes: 240, resolutionMinutes: 1440 },
+    Medium: { responseMinutes: 720, resolutionMinutes: 2880 },
+    Low: { responseMinutes: 1440, resolutionMinutes: 4320 },
+  },
+  byCategoryOverride: {},
+};
+
+function migrateLegacyStatus(raw: string): OperationalReportStatus {
+  switch (raw) {
+    case 'Submitted':
+      return 'Submitted';
+    case 'Under Verification':
+    case 'Awaiting Evidence':
+    case 'AI Verification Pending':
+      return 'AI Verification Pending';
+    case 'Verified':
+    case 'Authority Acknowledged':
+      return 'Verified';
+    case 'Rejected':
+    case 'Rejected with reason':
+      return 'Rejected with reason';
+    case 'Assigned':
+      return 'Assigned';
+    case 'In Progress':
+      return 'In Progress';
+    case 'Awaiting Authority Review':
+    case 'Resolved – Awaiting Verification':
+      return 'Resolved – Awaiting Verification';
+    case 'Resolved':
+    case 'Verified Resolution':
+      return 'Verified Resolution';
+    case 'Reopened':
+      return 'Reopened';
+    case 'Escalated':
+      return 'Escalated';
+    default:
+      return 'Submitted';
+  }
+}
+
 function loadState(): PersistedState {
   try {
     if (fs.existsSync(DATA_FILE)) {
       const raw = fs.readFileSync(DATA_FILE, 'utf8');
       const parsed = JSON.parse(raw) as Partial<PersistedState>;
-      const loadedTracking = parsed.trackingSessions && typeof parsed.trackingSessions === 'object' ? parsed.trackingSessions : {};
+      const loadedTracking =
+        parsed.trackingSessions && typeof parsed.trackingSessions === 'object' ? parsed.trackingSessions : {};
       for (const [k, v] of Object.entries(loadedTracking)) {
         if (v && v.shareToken) activeTracking.set(k, v);
       }
+      const reports = Array.isArray(parsed.reports)
+        ? parsed.reports.map((r) => ({
+            ...r,
+            status: migrateLegacyStatus(String(r.status || 'Submitted')),
+          }))
+        : [];
       return {
         sessionSecret: parsed.sessionSecret,
         authorityPasscodeHash: parsed.authorityPasscodeHash,
         authorityPasscodeSalt: parsed.authorityPasscodeSalt,
-        reports: Array.isArray(parsed.reports) ? parsed.reports : [],
+        slaConfig: parsed.slaConfig || structuredClone(DEFAULT_SLA_CONFIG),
+        idempotencyKeys:
+          parsed.idempotencyKeys && typeof parsed.idempotencyKeys === 'object' ? parsed.idempotencyKeys : {},
+        reports,
         sosEvents: Array.isArray(parsed.sosEvents) ? parsed.sosEvents : [],
         medicalRequests: Array.isArray(parsed.medicalRequests) ? parsed.medicalRequests : [],
-        accidentRequests: Array.isArray(parsed.accidentRequests) ? parsed.accidentRequests : [],
         citizenComplaints: Array.isArray(parsed.citizenComplaints) ? parsed.citizenComplaints : [],
         officers: Array.isArray(parsed.officers) ? parsed.officers : [],
+        caregivers: Array.isArray(parsed.caregivers) ? parsed.caregivers : [],
+        callLogs: Array.isArray(parsed.callLogs) ? parsed.callLogs : [],
         notifications: Array.isArray(parsed.notifications) ? parsed.notifications : [],
         smsLogs: Array.isArray(parsed.smsLogs) ? parsed.smsLogs : [],
         auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
@@ -398,12 +499,15 @@ function loadState(): PersistedState {
     console.error('Failed to load operational store:', err);
   }
   return {
+    slaConfig: structuredClone(DEFAULT_SLA_CONFIG),
+    idempotencyKeys: {},
     reports: [],
     sosEvents: [],
     medicalRequests: [],
-    accidentRequests: [],
     citizenComplaints: [],
     officers: [],
+    caregivers: [],
+    callLogs: [],
     notifications: [],
     smsLogs: [],
     auditLogs: [],
@@ -436,23 +540,50 @@ function persistState() {
   }
 }
 
-export function computeSlaDeadlines(severity: string, isEmergency: boolean, createdIso: string) {
-  const baseMs = new Date(createdIso).getTime() || Date.now();
-  let responseHours = 24;
-  let resolutionHours = 72;
-  if (isEmergency || severity === 'Critical') {
-    responseHours = 1;
-    resolutionHours = 6;
-  } else if (severity === 'High') {
-    responseHours = 4;
-    resolutionHours = 24;
-  } else if (severity === 'Medium') {
-    responseHours = 12;
-    resolutionHours = 48;
+export function getSlaConfig(): SlaConfig {
+  if (!state.slaConfig) {
+    state.slaConfig = structuredClone(DEFAULT_SLA_CONFIG);
   }
+  return state.slaConfig;
+}
+
+export function updateSlaConfig(nextConfig: SlaConfig): SlaConfig {
+  state.slaConfig = {
+    bySeverity: {
+      ...DEFAULT_SLA_CONFIG.bySeverity,
+      ...(nextConfig.bySeverity || {}),
+    },
+    byCategoryOverride: nextConfig.byCategoryOverride || state.slaConfig?.byCategoryOverride || {},
+  };
+  persistState();
+  return state.slaConfig;
+}
+
+export function computeSlaDeadlines(
+  severity: string,
+  isEmergency: boolean,
+  createdIso: string,
+  category?: string
+) {
+  const baseMs = new Date(createdIso).getTime() || Date.now();
+  const cfg = getSlaConfig();
+  const sevKey: 'Low' | 'Medium' | 'High' | 'Critical' =
+    isEmergency || severity === 'Critical'
+      ? 'Critical'
+      : severity === 'High'
+      ? 'High'
+      : severity === 'Medium'
+      ? 'Medium'
+      : 'Low';
+
+  const catRule = category ? cfg.byCategoryOverride?.[category]?.[sevKey] : undefined;
+  const sevRule = cfg.bySeverity[sevKey] || DEFAULT_SLA_CONFIG.bySeverity[sevKey];
+  const responseMinutes = Math.max(0.02, catRule?.responseMinutes ?? sevRule.responseMinutes);
+  const resolutionMinutes = Math.max(0.04, catRule?.resolutionMinutes ?? sevRule.resolutionMinutes);
+
   return {
-    slaResponseDeadlineAt: new Date(baseMs + responseHours * 3600_000).toISOString(),
-    slaDeadlineAt: new Date(baseMs + resolutionHours * 3600_000).toISOString(),
+    slaResponseDeadlineAt: new Date(baseMs + responseMinutes * 60_000).toISOString(),
+    slaDeadlineAt: new Date(baseMs + resolutionMinutes * 60_000).toISOString(),
   };
 }
 
@@ -506,8 +637,7 @@ export function recomputeOfficerWorkloads() {
       (r) =>
         (r.assignedOfficerUid === officer.uid ||
           (r.assignedOfficer && r.assignedOfficer.toLowerCase() === officer.name.toLowerCase())) &&
-        r.status !== 'Resolved' &&
-        r.status !== 'Rejected'
+        !SLA_PAUSED_OR_CLOSED_STATUSES.has(r.status)
     ).length;
     officer.activeWorkload = activeCount;
   }
@@ -705,7 +835,12 @@ export function getNotificationsForCitizen(uid: string): PlatformNotification[] 
 export function getNotificationsForAuthority(session: AuthoritySession): PlatformNotification[] {
   return state.notifications.filter((n) => {
     if (n.targetType === 'authority') {
-      if (!n.targetDepartment || session.role === 'admin' || session.department === 'All Departments' || session.department === 'Emergency Control Room') {
+      if (
+        !n.targetDepartment ||
+        session.role === 'admin' ||
+        session.department === 'All Departments' ||
+        session.department === 'Emergency Control Room'
+      ) {
         return true;
       }
       return n.targetDepartment === session.department;
@@ -750,6 +885,25 @@ export function getSmsLogs(): SmsLogEntry[] {
   return state.smsLogs;
 }
 
+export function getSmsLogById(id: string): SmsLogEntry | null {
+  return state.smsLogs.find((s) => s.id === id) || null;
+}
+
+export function updateSmsLogById(
+  id: string,
+  status: SmsLogEntry['status'],
+  error?: string
+): SmsLogEntry | null {
+  const idx = state.smsLogs.findIndex((s) => s.id === id);
+  if (idx < 0) return null;
+  const next = { ...state.smsLogs[idx], status, updatedAt: new Date().toISOString() };
+  if (error) next.error = error;
+  else if (status === 'delivered' || status === 'sent') delete next.error;
+  state.smsLogs[idx] = next;
+  persistState();
+  return state.smsLogs[idx];
+}
+
 export function updateSmsLogByProviderId(
   providerMessageId: string,
   status: SmsLogEntry['status'],
@@ -757,14 +911,63 @@ export function updateSmsLogByProviderId(
 ): SmsLogEntry | null {
   const idx = state.smsLogs.findIndex((s) => s.providerMessageId === providerMessageId);
   if (idx < 0) return null;
-  state.smsLogs[idx] = {
-    ...state.smsLogs[idx],
-    status,
-    ...(error ? { error } : {}),
-    updatedAt: new Date().toISOString(),
-  };
+  const next = { ...state.smsLogs[idx], status, updatedAt: new Date().toISOString() };
+  if (error) next.error = error;
+  else if (status === 'delivered' || status === 'sent') delete next.error;
+  state.smsLogs[idx] = next;
   persistState();
   return state.smsLogs[idx];
+}
+
+// Caregivers & Call Logging
+export function getCaregiversByUid(uid: string): CaregiverRecord[] {
+  return state.caregivers.filter((c) => c.uid === uid);
+}
+
+export function upsertCaregiver(rec: CaregiverRecord): { record: CaregiverRecord; created: boolean } {
+  const existingIdx = state.caregivers.findIndex(
+    (c) => (c.id === rec.id) || (c.uid === rec.uid && c.phone === rec.phone)
+  );
+  if (existingIdx >= 0) {
+    state.caregivers[existingIdx] = {
+      ...state.caregivers[existingIdx],
+      ...rec,
+      id: state.caregivers[existingIdx].id,
+      createdAt: state.caregivers[existingIdx].createdAt,
+      updatedAt: rec.updatedAt,
+    };
+    persistState();
+    return { record: state.caregivers[existingIdx], created: false };
+  }
+  state.caregivers.unshift(rec);
+  persistState();
+  return { record: rec, created: true };
+}
+
+export function deleteCaregiver(uid: string, id: string): boolean {
+  const before = state.caregivers.length;
+  state.caregivers = state.caregivers.filter((c) => !(c.uid === uid && (c.id === id || c.phone === id)));
+  if (state.caregivers.length !== before) {
+    persistState();
+    return true;
+  }
+  return false;
+}
+
+export function addCallLog(entry: Omit<CallLogEntry, 'id' | 'createdAt'>): CallLogEntry {
+  const full: CallLogEntry = {
+    ...entry,
+    id: `call_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+    createdAt: new Date().toISOString(),
+  };
+  state.callLogs.unshift(full);
+  if (state.callLogs.length > 500) state.callLogs.length = 500;
+  persistState();
+  return full;
+}
+
+export function getCallLogsByUid(uid: string): CallLogEntry[] {
+  return state.callLogs.filter((c) => c.uid === uid);
 }
 
 export function getRecentReportsForContext() {
@@ -779,12 +982,25 @@ export function getRecentReportsForContext() {
   }));
 }
 
+export function findReportByIdempotencyKey(key: string): OperationalReportRecord | undefined {
+  if (!key) return undefined;
+  const reportId = state.idempotencyKeys?.[key];
+  if (!reportId) return undefined;
+  return getOperationalReportById(reportId);
+}
+
+export function registerIdempotencyKey(key: string, reportId: string) {
+  if (!key || !reportId) return;
+  if (!state.idempotencyKeys) state.idempotencyKeys = {};
+  state.idempotencyKeys[key] = reportId;
+  persistState();
+}
+
 export function upsertOperationalReport(report: OperationalReportRecord): OperationalReportRecord {
   const nowIso = report.createdAt || new Date().toISOString();
-  const sla = computeSlaDeadlines(report.severity, report.isEmergency, nowIso);
+  const sla = computeSlaDeadlines(report.severity, report.isEmergency, nowIso, report.category);
   const referenceNumber =
-    report.referenceNumber ||
-    `REF-${report.complaintId.replace(/^SEVA-/, '')}`;
+    report.referenceNumber || `REF-${report.complaintId.replace(/^SEVA-/, '')}`;
 
   const defaultVerificationStatus: VerificationStatus =
     report.verificationStatus ||
@@ -794,15 +1010,20 @@ export function upsertOperationalReport(report: OperationalReportRecord): Operat
       ? 'Flagged for Manual Review'
       : 'Pending Verification');
 
+  const normalizedStatus = migrateLegacyStatus(String(report.status || 'Submitted'));
+
   const normalized: OperationalReportRecord = {
     ...report,
+    status: normalizedStatus,
     referenceNumber,
     verificationStatus: defaultVerificationStatus,
     fraudProbability: report.fraudProbability ?? Number(((report.fraudRiskScore || 0) / 100).toFixed(2)),
-    evidenceCompleteness: report.evidenceCompleteness || (report.photoDataUrl || report.photoUrls?.length ? 'Complete' : 'Partial'),
+    evidenceCompleteness:
+      report.evidenceCompleteness || (report.photoDataUrl || report.photoUrls?.length ? 'Complete' : 'Partial'),
     assignmentHistory: report.assignmentHistory || [],
     disputeHistory: report.disputeHistory || [],
     escalations: report.escalations || [],
+    escalationLevel: report.escalationLevel || 0,
     citizenEvidenceUploads: report.citizenEvidenceUploads || [],
     photoUrls: report.photoUrls || [],
     slaDeadlineAt: report.slaDeadlineAt || sla.slaDeadlineAt,
@@ -815,9 +1036,17 @@ export function upsertOperationalReport(report: OperationalReportRecord): Operat
   } else {
     state.reports.unshift(normalized);
   }
+  if (normalized.idempotencyKey) {
+    if (!state.idempotencyKeys) state.idempotencyKeys = {};
+    state.idempotencyKeys[normalized.idempotencyKey] = normalized.id;
+  }
   recomputeOfficerWorkloads();
   persistState();
   return state.reports.find((r) => r.id === normalized.id || r.complaintId === normalized.complaintId)!;
+}
+
+export function getActiveReportsForSlaCheck(): OperationalReportRecord[] {
+  return state.reports.filter((r) => !SLA_PAUSED_OR_CLOSED_STATUSES.has(r.status));
 }
 
 export function getOperationalReports(filters?: {
@@ -830,6 +1059,8 @@ export function getOperationalReports(filters?: {
   onlyOverdue?: boolean;
   onlyReopened?: boolean;
   onlyEmergency?: boolean;
+  onlyEscalated?: boolean;
+  onlyUnassigned?: boolean;
   fraudQueue?: 'operational' | 'fraud_review' | 'all';
   includeSensitive?: boolean;
 }): OperationalReportRecord[] {
@@ -838,11 +1069,21 @@ export function getOperationalReports(filters?: {
   return state.reports.filter((r) => {
     if (!filters?.includeSensitive && r.isSensitive) return false;
     if (filters?.fraudQueue === 'operational') {
-      if ((r.fraudQueueStatus === 'restricted_queue' || r.fraudQueueStatus === 'investigation_queue' || r.fraudQueueStatus === 'rejected') && !r.isEmergency) {
+      if (
+        (r.fraudQueueStatus === 'restricted_queue' ||
+          r.fraudQueueStatus === 'investigation_queue' ||
+          r.fraudQueueStatus === 'rejected') &&
+        !r.isEmergency
+      ) {
         return false;
       }
     } else if (filters?.fraudQueue === 'fraud_review') {
-      if (r.fraudQueueStatus === 'cleared' && r.verificationStatus !== 'Flagged for Manual Review' && r.verificationStatus !== 'Rejected') {
+      if (
+        r.fraudQueueStatus === 'cleared' &&
+        r.verificationStatus !== 'Flagged for Manual Review' &&
+        r.verificationStatus !== 'Rejected' &&
+        r.status !== 'AI Verification Pending'
+      ) {
         return false;
       }
     }
@@ -856,11 +1097,15 @@ export function getOperationalReports(filters?: {
       return false;
     }
     if (filters?.onlyEmergency && !r.isEmergency) return false;
+    if (filters?.onlyUnassigned && (r.assignedOfficer || r.assignedOfficerUid)) return false;
+    if (filters?.onlyEscalated && r.status !== 'Escalated' && !(r.escalations && r.escalations.length > 0)) {
+      return false;
+    }
     if (filters?.onlyReopened && r.status !== 'Reopened' && !(r.disputeHistory && r.disputeHistory.length > 0)) {
       return false;
     }
     if (filters?.onlyOverdue) {
-      const isOpen = r.status !== 'Resolved' && r.status !== 'Rejected';
+      const isOpen = !SLA_PAUSED_OR_CLOSED_STATUSES.has(r.status);
       const breached = r.slaDeadlineAt ? new Date(r.slaDeadlineAt).getTime() < nowMs : false;
       if (!isOpen || !breached) return false;
     }
@@ -959,31 +1204,6 @@ export function updateMedicalRequest(
   return state.medicalRequests[idx];
 }
 
-// Independent Road Accident Collection
-export function upsertAccidentRequest(rec: AccidentRequestRecord): AccidentRequestRecord {
-  const idx = state.accidentRequests.findIndex((a) => a.id === rec.id || a.trackingId === rec.trackingId);
-  if (idx >= 0) state.accidentRequests[idx] = { ...state.accidentRequests[idx], ...rec };
-  else state.accidentRequests.unshift(rec);
-  persistState();
-  return state.accidentRequests.find((a) => a.id === rec.id)!;
-}
-
-export function getAccidentRequests(uid?: string): AccidentRequestRecord[] {
-  if (!uid) return state.accidentRequests;
-  return state.accidentRequests.filter((a) => a.uid === uid);
-}
-
-export function updateAccidentRequest(
-  id: string,
-  updater: (existing: AccidentRequestRecord) => AccidentRequestRecord
-): AccidentRequestRecord | null {
-  const idx = state.accidentRequests.findIndex((a) => a.id === id || a.trackingId === id);
-  if (idx < 0) return null;
-  state.accidentRequests[idx] = updater(state.accidentRequests[idx]);
-  persistState();
-  return state.accidentRequests[idx];
-}
-
 // Independent Citizen Complaint Box Against Authority
 export function createCitizenComplaint(
   rec: CitizenComplaintAgainstAuthority
@@ -1002,8 +1222,6 @@ export function getCitizenComplaintById(id: string): CitizenComplaintAgainstAuth
 }
 
 export function getAuthorityComplaintsForSession(session: AuthoritySession): CitizenComplaintAgainstAuthority[] {
-  // Confidentiality & Conflict of Interest Isolation:
-  // A target officer can NEVER read or review complaints filed against themselves!
   return state.citizenComplaints.filter((c) => {
     const isTarget =
       (c.targetOfficerUid && c.targetOfficerUid === session.uid) ||
@@ -1035,7 +1253,10 @@ export function updateCitizenComplaint(
 
 export function getPublicHeatmapIncidents() {
   const approved = state.reports.filter(
-    (r) => r.fraudQueueStatus !== 'rejected' && r.fraudQueueStatus !== 'investigation_queue'
+    (r) =>
+      r.fraudQueueStatus !== 'rejected' &&
+      r.fraudQueueStatus !== 'investigation_queue' &&
+      r.status !== 'Rejected with reason'
   );
   return approved.map((r) => ({
     id: r.complaintId,
@@ -1076,13 +1297,38 @@ export function getTrackingSession(shareToken: string): LiveTrackingRecord | nul
 }
 
 // Authority Accountability, Performance Index, Leaderboard & Analytics Engine
-export function computePerformanceAndAnalytics() {
+export function computePerformanceAndAnalytics(filters?: {
+  period?: '7d' | '30d' | '90d' | 'all';
+  department?: string;
+}) {
   recomputeOfficerWorkloads();
   const nowMs = Date.now();
-  const allReports = state.reports;
+  const periodDays =
+    filters?.period === '7d' ? 7 : filters?.period === '30d' ? 30 : filters?.period === '90d' ? 90 : null;
+  const cutoffMs = periodDays ? nowMs - periodDays * 86400_000 : 0;
 
-  // Build officer metrics strictly from real registered/authenticated officers
-  const officerMetrics = state.officers.map((officer) => {
+  const allReports = state.reports.filter((r) => {
+    if (cutoffMs && new Date(r.createdAt).getTime() < cutoffMs) return false;
+    if (filters?.department && filters.department !== 'All Departments' && r.department !== filters.department) {
+      return false;
+    }
+    return true;
+  });
+
+  const isResolvedStatus = (st: string) =>
+    st === 'Verified Resolution' || st === 'Resolved – Awaiting Verification';
+
+  const officerList =
+    filters?.department && filters.department !== 'All Departments'
+      ? state.officers.filter(
+          (o) =>
+            o.department === filters.department ||
+            o.department === 'All Departments' ||
+            o.role === 'admin'
+        )
+      : state.officers;
+
+  const officerMetrics = officerList.map((officer) => {
     const handled = allReports.filter(
       (r) =>
         r.assignedOfficerUid === officer.uid ||
@@ -1092,21 +1338,19 @@ export function computePerformanceAndAnalytics() {
           r.resolutionEvidence.resolvingOfficer.toLowerCase() === officer.name.toLowerCase())
     );
 
-    const resolved = handled.filter((r) => r.status === 'Resolved');
+    const resolved = handled.filter((r) => isResolvedStatus(r.status));
     const evidenceVerified = resolved.filter(
       (r) =>
         r.resolutionEvidence &&
-        r.resolutionEvidence.beforePhotos.length > 0 &&
         r.resolutionEvidence.afterPhotos.length > 0 &&
-        r.resolutionEvidence.approvalStatus === 'approved'
+        (r.status === 'Verified Resolution' || r.resolutionEvidence.approvalStatus === 'approved')
     );
     const reopenedCount = handled.filter(
       (r) => r.status === 'Reopened' || (r.disputeHistory && r.disputeHistory.length > 0)
     ).length;
     const overdueCount = handled.filter(
       (r) =>
-        r.status !== 'Resolved' &&
-        r.status !== 'Rejected' &&
+        !SLA_PAUSED_OR_CLOSED_STATUSES.has(r.status) &&
         r.slaDeadlineAt &&
         new Date(r.slaDeadlineAt).getTime() < nowMs
     ).length;
@@ -1127,25 +1371,35 @@ export function computePerformanceAndAnalytics() {
       ? Number((ratings.reduce((a, b) => a + b, 0) / ratings.length).toFixed(2))
       : null;
 
-    // Multi-factor Performance Index (0-100) — never rewards empty Resolve clicks!
-    // Weighs: Verified Resolution Evidence Quality (35), Timeliness & SLA (25), Citizen Satisfaction (20), Verification Integrity (10), Minus Reopened/Overdue Penalties
     const totalCount = handled.length;
     const qualityRatio = resolved.length > 0 ? evidenceVerified.length / resolved.length : 0;
     const timelinessScore =
       totalCount === 0
-        ? 50
+        ? 0
         : Math.max(0, 25 - Math.min(25, overdueCount * 6) - (avgResolutionHours > 48 ? 6 : 0));
     const qualityScore = Math.round(qualityRatio * 35);
-    const citizenScore = avgCitizenRating !== null ? Math.round((avgCitizenRating / 5) * 20) : resolved.length > 0 ? 12 : 10;
+    const citizenScore =
+      totalCount === 0
+        ? 0
+        : avgCitizenRating !== null
+        ? Math.round((avgCitizenRating / 5) * 20)
+        : resolved.length > 0
+        ? 12
+        : 8;
     const completionRatio = totalCount > 0 ? Math.min(1, resolved.length / totalCount) : 0;
     const resolutionVolumeScore = Math.round(completionRatio * 20);
     const reopenPenalty = Math.min(25, reopenedCount * 10);
 
+    // Zero-case officers strictly receive 0 (never an inflated default 50!)
     const rawIndex =
       totalCount === 0
-        ? 50
-        : Math.max(0, Math.min(100, qualityScore + timelinessScore + citizenScore + resolutionVolumeScore - reopenPenalty));
+        ? 0
+        : Math.max(
+            0,
+            Math.min(100, qualityScore + timelinessScore + citizenScore + resolutionVolumeScore - reopenPenalty)
+          );
 
+    const qualifiedForRanking = totalCount >= 2;
     const badges: string[] = [];
     if (evidenceVerified.length >= 2 && reopenedCount === 0 && rawIndex >= 80) badges.push('Civic Champion');
     if (resolved.length >= 1 && avgResolutionHours > 0 && avgResolutionHours <= 12) badges.push('Quick Responder');
@@ -1170,24 +1424,33 @@ export function computePerformanceAndAnalytics() {
       avgResolutionHours,
       avgCitizenRating,
       performanceIndex: rawIndex,
+      qualifiedForRanking,
       badges,
     };
   });
 
-  officerMetrics.sort((a, b) => b.performanceIndex - a.performanceIndex || b.evidenceVerifiedCount - a.evidenceVerifiedCount);
+  // Fair leaderboard sort: qualified officers with real resolved/handled cases rank ahead of 0-case officers
+  officerMetrics.sort(
+    (a, b) =>
+      Number(Boolean(b.qualifiedForRanking)) - Number(Boolean(a.qualifiedForRanking)) ||
+      (b.totalHandled > 0 ? 1 : 0) - (a.totalHandled > 0 ? 1 : 0) ||
+      b.performanceIndex - a.performanceIndex ||
+      b.evidenceVerifiedCount - a.evidenceVerifiedCount ||
+      b.resolvedCount - a.resolvedCount
+  );
 
-  // Department Rankings from real report records
   const deptNames = Array.from(
-    new Set([
-      ...allReports.map((r) => r.department),
-      ...state.officers.map((o) => o.department),
-    ])
-  ).filter((d) => d && d !== 'All Departments');
+    new Set([...allReports.map((r) => r.department), ...state.officers.map((o) => o.department)])
+  ).filter((d) => {
+    if (!d || d === 'All Departments') return false;
+    if (filters?.department && filters.department !== 'All Departments') return d === filters.department;
+    return true;
+  });
 
   const departmentRankings = deptNames.map((dept) => {
     const deptReports = allReports.filter((r) => r.department === dept);
-    const resolved = deptReports.filter((r) => r.status === 'Resolved');
-    const pending = deptReports.filter((r) => r.status !== 'Resolved' && r.status !== 'Rejected');
+    const resolved = deptReports.filter((r) => isResolvedStatus(r.status));
+    const pending = deptReports.filter((r) => !SLA_PAUSED_OR_CLOSED_STATUSES.has(r.status));
     const reopenedCount = deptReports.filter(
       (r) => r.status === 'Reopened' || (r.disputeHistory && r.disputeHistory.length > 0)
     ).length;
@@ -1219,15 +1482,15 @@ export function computePerformanceAndAnalytics() {
     ).length;
     const baseScore =
       deptReports.length === 0
-        ? 60
+        ? 0
         : Math.max(
             0,
             Math.min(
               100,
               Math.round(
-                (slaComplianceRate * 0.4) +
-                  ((resolved.length / deptReports.length) * 30) +
-                  ((resolved.length > 0 ? evidenceBackedCount / resolved.length : 0.5) * 20) +
+                slaComplianceRate * 0.4 +
+                  (resolved.length / deptReports.length) * 30 +
+                  (resolved.length > 0 ? evidenceBackedCount / resolved.length : 0.3) * 20 +
                   (withinSlaResolved > 0 ? 10 : 5) -
                   reopenedCount * 8
               )
@@ -1248,9 +1511,8 @@ export function computePerformanceAndAnalytics() {
     };
   });
 
-  departmentRankings.sort((a, b) => b.departmentScore - a.departmentScore);
+  departmentRankings.sort((a, b) => b.departmentScore - a.departmentScore || b.totalReports - a.totalReports);
 
-  // Category & Status Breakdown + Daily/Weekly Trends
   const byCategory: Record<string, number> = {};
   const byStatus: Record<string, number> = {};
   for (const r of allReports) {
@@ -1263,7 +1525,7 @@ export function computePerformanceAndAnalytics() {
     const d = new Date(nowMs - i * 86400_000);
     const dayStr = d.toISOString().slice(0, 10);
     const subCount = allReports.filter((r) => String(r.createdAt).startsWith(dayStr)).length;
-    const resCount = allReports.filter((r) => r.status === 'Resolved' && String(r.updatedAt).startsWith(dayStr)).length;
+    const resCount = allReports.filter((r) => isResolvedStatus(r.status) && String(r.updatedAt).startsWith(dayStr)).length;
     last7Days.push({
       date: dayStr,
       label: dayStr.slice(5),
@@ -1278,7 +1540,7 @@ export function computePerformanceAndAnalytics() {
     const d = new Date(nowMs - i * 86400_000);
     const dayStr = d.toISOString().slice(0, 10);
     const subCount = allReports.filter((r) => String(r.createdAt).startsWith(dayStr)).length;
-    const resCount = allReports.filter((r) => r.status === 'Resolved' && String(r.updatedAt).startsWith(dayStr)).length;
+    const resCount = allReports.filter((r) => isResolvedStatus(r.status) && String(r.updatedAt).startsWith(dayStr)).length;
     last30Days.push({
       date: dayStr,
       label: dayStr.slice(5),
@@ -1288,7 +1550,7 @@ export function computePerformanceAndAnalytics() {
     });
   }
 
-  const resolvedReportsAll = allReports.filter((r) => r.status === 'Resolved');
+  const resolvedReportsAll = allReports.filter((r) => isResolvedStatus(r.status));
   const resolutionRate =
     allReports.length > 0 ? Math.round((resolvedReportsAll.length / allReports.length) * 100) : 0;
   const overallAvgResolutionHours = resolvedReportsAll.length
@@ -1301,7 +1563,6 @@ export function computePerformanceAndAnalytics() {
         ).toFixed(1)
       )
     : 0;
-  const animalRescueTotal = allReports.filter((r) => r.category === 'Animal Rescue and Welfare').length;
 
   return {
     officerLeaderboard: officerMetrics,
@@ -1315,7 +1576,6 @@ export function computePerformanceAndAnalytics() {
       resolvedCount: resolvedReportsAll.length,
       resolutionRate,
       avgResolutionHours: overallAvgResolutionHours,
-      animalRescueTotal,
       byCategory,
       byStatus,
       last7Days,
@@ -1324,15 +1584,14 @@ export function computePerformanceAndAnalytics() {
     totals: {
       reports: allReports.length,
       resolved: resolvedReportsAll.length,
+      verifiedResolution: allReports.filter((r) => r.status === 'Verified Resolution').length,
       reopened: allReports.filter((r) => r.status === 'Reopened').length,
       overdue: allReports.filter(
-        (r) => r.status !== 'Resolved' && r.status !== 'Rejected' && r.slaDeadlineAt && new Date(r.slaDeadlineAt).getTime() < nowMs
+        (r) => !SLA_PAUSED_OR_CLOSED_STATUSES.has(r.status) && r.slaDeadlineAt && new Date(r.slaDeadlineAt).getTime() < nowMs
       ).length,
-      escalated: allReports.filter((r) => r.escalations && r.escalations.length > 0).length,
+      escalated: allReports.filter((r) => r.status === 'Escalated' || (r.escalations && r.escalations.length > 0)).length,
       medicalTotal: state.medicalRequests.length,
-      accidentTotal: state.accidentRequests.length,
       sosTotal: state.sosEvents.length,
-      animalRescueTotal,
       complaintsAgainstAuthority: state.citizenComplaints.length,
     },
   };

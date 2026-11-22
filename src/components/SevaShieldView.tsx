@@ -4,6 +4,7 @@ import {
   Mic,
   MicOff,
   Phone,
+  PhoneCall,
   Plus,
   ShieldAlert,
   ShieldCheck,
@@ -24,7 +25,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { useLocationEngine } from '../contexts/LocationContext';
 import { OperationType, buildFirestoreErrorInfo, db, handleFirestoreError } from '../lib/firebase';
-import { EmergencyContact, SmsLogEntry, SosEvent } from '../types/seva';
+import { CallLogEntry, EmergencyContact, SmsLogEntry, SosEvent } from '../types/seva';
 
 interface SevaShieldViewProps {
   onSpeakText: (text: string) => void;
@@ -51,6 +52,11 @@ export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) =
   const [contactRelation, setContactRelation] = useState('Family');
   const [contactConsent, setContactConsent] = useState(true);
   const [contactError, setContactError] = useState<string | null>(null);
+  const [contactSmsNote, setContactSmsNote] = useState<string | null>(null);
+  const [backendCaregivers, setBackendCaregivers] = useState<EmergencyContact[]>([]);
+  const [selectedCaregiverId, setSelectedCaregiverId] = useState<string>('');
+  const [callStatusBanner, setCallStatusBanner] = useState<string | null>(null);
+  const [callLogs, setCallLogs] = useState<CallLogEntry[]>([]);
 
   // SOS hold + 5s countdown state
   const [holdProgress, setHoldProgress] = useState(0);
@@ -67,13 +73,36 @@ export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) =
   const countdownTimerRef = useRef<number | null>(null);
   const recognitionRef = useRef<any>(null);
 
+  const fetchCaregiversAndCalls = async (uid: string) => {
+    try {
+      const [cgRes, callRes] = await Promise.all([
+        fetch(`/api/caregivers/${encodeURIComponent(uid)}`),
+        fetch(`/api/calls/${encodeURIComponent(uid)}`),
+      ]);
+      if (cgRes.ok) {
+        const d = await cgRes.json();
+        if (Array.isArray(d.caregivers)) setBackendCaregivers(d.caregivers);
+      }
+      if (callRes.ok) {
+        const d = await callRes.json();
+        if (Array.isArray(d.calls)) setCallLogs(d.calls);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
   // Load user's contacts and SOS history
   useEffect(() => {
     if (!firebaseUser) {
       setContacts([]);
+      setBackendCaregivers([]);
+      setCallLogs([]);
       setSosHistory([]);
       return;
     }
+
+    fetchCaregiversAndCalls(firebaseUser.uid);
 
     const qContacts = query(collection(db, 'emergencyContacts'), where('uid', '==', firebaseUser.uid));
     const unsubContacts = onSnapshot(
@@ -106,6 +135,23 @@ export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) =
     };
   }, [firebaseUser]);
 
+  const mergedContacts = React.useMemo(() => {
+    const map = new Map<string, EmergencyContact>();
+    for (const c of contacts) map.set(c.phone, c);
+    for (const b of backendCaregivers) {
+      if (!map.has(b.phone)) map.set(b.phone, b);
+    }
+    return Array.from(map.values());
+  }, [contacts, backendCaregivers]);
+
+  useEffect(() => {
+    if (!selectedCaregiverId && mergedContacts.length > 0) {
+      setSelectedCaregiverId(mergedContacts[0].id);
+    } else if (selectedCaregiverId && !mergedContacts.some((c) => c.id === selectedCaregiverId)) {
+      setSelectedCaregiverId(mergedContacts[0]?.id || '');
+    }
+  }, [mergedContacts, selectedCaregiverId]);
+
   const executeSosActivation = async (triggerMethod: 'button_hold' | 'voice_phrase') => {
     if (!firebaseUser) {
       setSosStatusMsg('Please sign in first to record and dispatch an SOS event.');
@@ -119,7 +165,7 @@ export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) =
 
     const shareToken = await startLiveTracking(true);
     const sosId = `sos_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const consentedContacts = contacts.filter((c) => c.consentGiven);
+    const consentedContacts = mergedContacts.filter((c) => c.consentGiven);
     const baseDeliverySummary = `Recorded active SOS · ${consentedContacts.length} trusted contact(s) registered · Control Room portal alerted via WebSocket${
       shareToken ? ' · Live GPS link active' : ''
     }.`.slice(0, 290);
@@ -315,49 +361,133 @@ export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) =
   const handleAddContact = async (e: React.FormEvent) => {
     e.preventDefault();
     setContactError(null);
+    setContactSmsNote(null);
     if (!firebaseUser) {
       setContactError('Sign in first to save trusted emergency contacts.');
       return;
     }
-    if (contacts.length >= 5) {
+    if (mergedContacts.length >= 5) {
       setContactError('Maximum of 5 trusted emergency contacts reached.');
       return;
     }
-    const cleanPhone = contactPhone.replace(/[\s-]/g, '');
-    if (!/^(\+91)?[6-9][0-9]{9}$/.test(cleanPhone)) {
-      setContactError('Enter a valid 10-digit Indian mobile number (e.g., 9876543210 or +919876543210).');
+    const cleanPhone = contactPhone.replace(/[\s()-]/g, '');
+    const validPhone = /^(\+[1-9][0-9]{7,14}|[6-9][0-9]{9})$/.test(cleanPhone);
+    if (!validPhone) {
+      setContactError('Enter a valid 10-digit Indian mobile (9876543210) or E.164 number (+919876543210).');
       return;
     }
-    if (contacts.some((c) => c.phone === cleanPhone)) {
+    const normalizedPhone = cleanPhone.startsWith('+') ? cleanPhone : `+91${cleanPhone}`;
+    if (mergedContacts.some((c) => c.phone === normalizedPhone || c.phone === cleanPhone)) {
       setContactError('This phone number is already in your trusted contacts.');
       return;
     }
 
-    const id = `ec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     try {
-      await setDoc(doc(db, 'emergencyContacts', id), {
-        uid: firebaseUser.uid,
-        name: contactName.trim().slice(0, 100),
-        phone: cleanPhone,
-        relation: contactRelation.trim().slice(0, 40),
-        consentGiven: contactConsent,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+      const apiRes = await fetch('/api/caregivers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uid: firebaseUser.uid,
+          citizenName: profile?.displayName || firebaseUser.displayName || 'SEVA Citizen',
+          name: contactName.trim(),
+          phone: normalizedPhone,
+          relation: contactRelation.trim(),
+          consentGiven: contactConsent,
+        }),
       });
+      const apiJson = await apiRes.json();
+      if (!apiRes.ok) {
+        setContactError(apiJson.error || 'Unable to save caregiver contact.');
+        return;
+      }
+      if (Array.isArray(apiJson.caregivers)) {
+        setBackendCaregivers(apiJson.caregivers);
+      }
+      if (apiJson.smsDispatch?.summaryText) {
+        setContactSmsNote(apiJson.smsDispatch.summaryText);
+      }
+
+      const id = apiJson.caregiver?.id || `ec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      try {
+        await setDoc(doc(db, 'emergencyContacts', id), {
+          uid: firebaseUser.uid,
+          name: contactName.trim().slice(0, 100),
+          phone: normalizedPhone,
+          relation: contactRelation.trim().slice(0, 40),
+          consentGiven: contactConsent,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } catch (fsErr) {
+        buildFirestoreErrorInfo(fsErr, OperationType.CREATE, `emergencyContacts/${id}`);
+      }
+
       setContactName('');
       setContactPhone('');
-    } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, `emergencyContacts/${id}`);
+    } catch (err: any) {
+      setContactError(err?.message || 'Unable to add emergency contact.');
     }
   };
 
-  const handleDeleteContact = async (id: string) => {
+  const handleDeleteContact = async (c: EmergencyContact) => {
+    if (!firebaseUser) return;
     try {
-      await deleteDoc(doc(db, 'emergencyContacts', id));
+      await fetch(`/api/caregivers/${encodeURIComponent(firebaseUser.uid)}/${encodeURIComponent(c.id)}`, {
+        method: 'DELETE',
+      }).catch(() => {});
+      setBackendCaregivers((prev) => prev.filter((item) => item.id !== c.id && item.phone !== c.phone));
+      if (contacts.some((fc) => fc.id === c.id)) {
+        await deleteDoc(doc(db, 'emergencyContacts', c.id));
+      }
     } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `emergencyContacts/${id}`);
+      handleFirestoreError(err, OperationType.DELETE, `emergencyContacts/${c.id}`);
     }
   };
+
+  const handleCallCaregiverClick = async (caregiver: EmergencyContact | undefined, e: React.MouseEvent) => {
+    setCallStatusBanner(null);
+    if (!caregiver || !caregiver.phone) {
+      e.preventDefault();
+      setCallStatusBanner('No caregiver selected or phone number missing. Add a valid caregiver contact first.');
+      return;
+    }
+    const clean = caregiver.phone.replace(/[\s()-]/g, '');
+    if (!/^(\+[1-9][0-9]{7,14}|[6-9][0-9]{9})$/.test(clean)) {
+      e.preventDefault();
+      setCallStatusBanner(`Invalid caregiver phone number (${caregiver.phone}). Update to E.164 format before calling.`);
+      return;
+    }
+    if (firebaseUser) {
+      try {
+        const res = await fetch('/api/calls/log', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            uid: firebaseUser.uid,
+            caregiverId: caregiver.id,
+            caregiverName: caregiver.name,
+            caregiverPhone: clean.startsWith('+') ? clean : `+91${clean}`,
+            source: 'seva_shield',
+          }),
+        });
+        const data = await res.json();
+        if (data.callLog) {
+          setCallLogs((prev) => [data.callLog, ...prev].slice(0, 10));
+        }
+      } catch {
+        // Non-blocking audit log
+      }
+    }
+    setCallStatusBanner(
+      `Phone dialer opened for ${caregiver.name} (${caregiver.phone}) — verify call connection on your device.`
+    );
+  };
+
+  const selectedCaregiver = mergedContacts.find((c) => c.id === selectedCaregiverId) || mergedContacts[0];
+  const selectedCaregiverTel =
+    selectedCaregiver && /^(\+[1-9][0-9]{7,14}|[6-9][0-9]{9})$/.test(selectedCaregiver.phone.replace(/[\s()-]/g, ''))
+      ? `tel:${selectedCaregiver.phone.replace(/[\s()-]/g, '')}`
+      : undefined;
 
   return (
     <div className="space-y-6">
@@ -371,7 +501,7 @@ export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) =
             Seva Shield SOS &amp; Women Safety
           </h1>
           <p className="text-sm text-slate-600 mt-1">
-            2-second hold SOS trigger, 5-second cancellation window, opt-in distress voice phrase guard, trusted contacts, and real-time caregiver SMS dispatch. (Medical Assistance &amp; Road Accident Help are separate dedicated sections.)
+            2-second hold SOS trigger, 5-second cancellation window, opt-in distress voice phrase guard, trusted contacts, direct caregiver calling, and real-time caregiver SMS dispatch.
           </p>
         </div>
 
@@ -530,11 +660,11 @@ export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) =
           </div>
         </div>
 
-        {/* Trusted Emergency Contacts (Max 5) */}
+        {/* Trusted Emergency Contacts (Max 5) + Call Caregiver */}
         <div className="lg:col-span-6 border border-slate-200 rounded-xl bg-white p-5 space-y-4">
           <div className="flex items-center justify-between">
             <h3 className="font-display text-base font-semibold text-slate-900">
-              Trusted Caregiver Contacts ({contacts.length}/5)
+              Trusted Caregiver Contacts ({mergedContacts.length}/5)
             </h3>
             <span className="text-xs text-slate-500">Private · Owner Only</span>
           </div>
@@ -582,7 +712,7 @@ export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) =
               onChange={(e) => setContactConsent(e.target.checked)}
               className="rounded border-slate-300 text-green-900"
             />
-            Consent to send SMS &amp; live GPS tracking link to these trusted contacts during SOS, Medical, or Accident emergencies.
+            Consent to send SMS &amp; live GPS tracking link to these trusted contacts during SOS or Medical emergencies.
           </label>
 
           {contactError && (
@@ -591,13 +721,55 @@ export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) =
             </div>
           )}
 
+          {contactSmsNote && (
+            <div className="text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded-lg p-2.5">
+              <strong>SMS Dispatch Status:</strong> {contactSmsNote}
+            </div>
+          )}
+
+          {/* Direct Call Caregiver Control */}
+          <div className="border border-slate-200 rounded-lg bg-slate-50 p-3.5 space-y-2.5">
+            <div className="text-xs font-semibold text-slate-900">Direct Caregiver Call</div>
+            {mergedContacts.length === 0 ? (
+              <p className="text-xs text-slate-500">Save at least one caregiver contact above to enable one-tap calling.</p>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={selectedCaregiver?.id || ''}
+                  onChange={(e) => setSelectedCaregiverId(e.target.value)}
+                  aria-label="Select caregiver to call"
+                  className="flex-1 min-w-[180px] text-xs border border-slate-200 rounded-lg px-2.5 py-2 bg-white"
+                >
+                  {mergedContacts.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} ({c.relation}) · {c.phone}
+                    </option>
+                  ))}
+                </select>
+                <a
+                  href={selectedCaregiverTel || '#call-caregiver'}
+                  onClick={(e) => handleCallCaregiverClick(selectedCaregiver, e)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-green-900 text-white text-xs font-semibold rounded-lg hover:bg-green-800"
+                >
+                  <PhoneCall className="w-3.5 h-3.5" />
+                  Call Caregiver
+                </a>
+              </div>
+            )}
+            {callStatusBanner && (
+              <div className="text-xs text-slate-700 bg-white border border-slate-200 rounded px-2.5 py-1.5">
+                {callStatusBanner}
+              </div>
+            )}
+          </div>
+
           <div className="divide-y divide-slate-200 border border-slate-200 rounded-lg">
-            {contacts.length === 0 ? (
+            {mergedContacts.length === 0 ? (
               <div className="p-4 text-xs text-slate-500 text-center">
                 No emergency contacts added yet.
               </div>
             ) : (
-              contacts.map((c) => (
+              mergedContacts.map((c) => (
                 <div key={c.id} className="p-3 flex items-center justify-between gap-2">
                   <div>
                     <div className="text-sm font-medium text-slate-900">
@@ -605,18 +777,36 @@ export const SevaShieldView: React.FC<SevaShieldViewProps> = ({ onSpeakText }) =
                     </div>
                     <div className="font-mono text-xs text-slate-600">{c.phone}</div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteContact(c.id)}
-                    aria-label={`Remove ${c.name}`}
-                    className="p-1.5 text-slate-500 hover:text-red-600"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <a
+                      href={`tel:${c.phone.replace(/[\s()-]/g, '')}`}
+                      onClick={(e) => handleCallCaregiverClick(c, e)}
+                      aria-label={`Call ${c.name}`}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 border border-slate-200 rounded text-xs font-medium text-green-900 hover:bg-emerald-50"
+                    >
+                      <Phone className="w-3 h-3" />
+                      Call
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteContact(c)}
+                      aria-label={`Remove ${c.name}`}
+                      className="p-1.5 text-slate-500 hover:text-red-600"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
               ))
             )}
           </div>
+
+          {callLogs.length > 0 && (
+            <div className="text-xs text-slate-500">
+              Latest dialer action: {callLogs[0].caregiverName} ({callLogs[0].status.replace('_', ' ')}) at{' '}
+              {new Date(callLogs[0].createdAt).toLocaleTimeString()}
+            </div>
+          )}
 
           {sosHistory.length > 0 && (
             <div className="pt-2">

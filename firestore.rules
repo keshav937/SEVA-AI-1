@@ -70,7 +70,7 @@ service cloud.firestore {
         && (!('phone' in data) || (data.phone is string && data.phone.size() <= 20))
         && (!('city' in data) || (data.city is string && data.city.size() <= 80))
         && (!('ward' in data) || (data.ward is string && data.ward.size() <= 80))
-        && data.role in ['citizen', 'authority', 'admin']
+        && data.role in ['citizen', 'authority', 'supervisor', 'admin']
         && (!('department' in data) || (data.department is string && data.department.size() <= 80))
         && data.points is int && data.points >= 0 && data.points <= 1000000
         && data.verifiedReportsCount is int && data.verifiedReportsCount >= 0 && data.verifiedReportsCount <= 100000
@@ -109,7 +109,7 @@ service cloud.firestore {
         && data.title is string && data.title.size() >= 3 && data.title.size() <= 160
         && data.description is string && data.description.size() >= 5 && data.description.size() <= 3000
         && data.severity in ['Low', 'Medium', 'High', 'Critical']
-        && data.status in ['Submitted', 'Authority Acknowledged', 'Assigned', 'In Progress', 'Resolved', 'Rejected']
+        && data.status in ['Submitted', 'AI Verification Pending', 'Verified', 'Rejected with reason', 'Assigned', 'In Progress', 'Resolved – Awaiting Verification', 'Verified Resolution', 'Reopened', 'Escalated']
         && data.department is string && data.department.size() <= 80
         && (!('ward' in data) || (data.ward is string && data.ward.size() <= 80))
         && (!('locality' in data) || (data.locality is string && data.locality.size() <= 120))
@@ -155,7 +155,7 @@ service cloud.firestore {
         && data.keys().hasOnly(['uid', 'name', 'phone', 'relation', 'consentGiven', 'createdAt', 'updatedAt'])
         && data.uid == request.auth.uid
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
-        && data.phone is string && data.phone.size() >= 10 && data.phone.size() <= 16 && data.phone.matches('^(\\+91)?[6-9][0-9]{9}$')
+        && data.phone is string && data.phone.size() >= 10 && data.phone.size() <= 16 && data.phone.matches('^(\\+[1-9][0-9]{7,14}|[6-9][0-9]{9})$')
         && data.relation is string && data.relation.size() >= 1 && data.relation.size() <= 40
         && data.consentGiven is bool;
     }
@@ -188,7 +188,7 @@ service cloud.firestore {
         && (data.lng is float || data.lng is int)
         && data.address is string && data.address.size() <= 300
         && (!('nearestHospital' in data) || (data.nearestHospital is string && data.nearestHospital.size() <= 200))
-        && data.status in ['Received', 'Authority Notified', 'Acknowledged', 'Assigned', 'On the Way', 'Resolved'];
+        && data.status in ['Received', 'Authority Notified', 'Acknowledged', 'Assigned', 'Responder Assigned', 'On the Way', 'Completed', 'Resolved'];
     }
 
     function isValidTrackingSession(data) {
@@ -301,8 +301,9 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && (
           isBootstrappedAdmin() ||
-          (existing().reporterUid == request.auth.uid && existing().status == 'Resolved' && incoming().diff(existing()).affectedKeys().hasOnly(['feedbackRating', 'feedbackComment', 'updatedAt'])) ||
-          (existing().reporterUid == request.auth.uid && !(existing().status in ['Resolved', 'Rejected']) && incoming().diff(existing()).affectedKeys().hasOnly(['description', 'address', 'photoDataUrl', 'updatedAt']))
+          (existing().reporterUid == request.auth.uid && existing().status == 'Verified Resolution' && incoming().diff(existing()).affectedKeys().hasOnly(['feedbackRating', 'feedbackComment', 'updatedAt'])) ||
+          (existing().reporterUid == request.auth.uid && existing().status == 'Resolved – Awaiting Verification' && incoming().status in ['Verified Resolution', 'Reopened'] && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'feedbackRating', 'feedbackComment', 'updatedAt'])) ||
+          (existing().reporterUid == request.auth.uid && !(existing().status in ['Verified Resolution', 'Rejected with reason']) && incoming().diff(existing()).affectedKeys().hasOnly(['description', 'address', 'photoDataUrl', 'updatedAt']))
         );
       allow delete: if isValidId(reportId) && isBootstrappedAdmin();
     }

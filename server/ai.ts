@@ -105,7 +105,6 @@ export const CIVIC_CATEGORIES = [
   'Waste Management',
   'Blocked Drains and Waterlogging',
   'Traffic and Road Obstructions',
-  'Road Accident Reporting',
   'Medical Assistance',
   'Women and Child Safety',
   'Animal Rescue and Welfare',
@@ -116,7 +115,6 @@ export const DEPARTMENT_BY_CATEGORY: Record<string, string> = {
   'Waste Management': 'Municipal Corporation',
   'Blocked Drains and Waterlogging': 'Municipal Corporation',
   'Traffic and Road Obstructions': 'Traffic Police',
-  'Road Accident Reporting': 'Emergency Control Room',
   'Medical Assistance': 'Medical Services',
   'Women and Child Safety': 'Police Department',
   'Animal Rescue and Welfare': 'Animal Welfare & Rescue',
@@ -124,12 +122,17 @@ export const DEPARTMENT_BY_CATEGORY: Record<string, string> = {
 
 export interface ReportAnalysisResult {
   suggestedCategory: string;
+  aiDetectedCategory: string;
   suggestedSeverity: 'Low' | 'Medium' | 'High' | 'Critical';
   recommendedDepartment: string;
   summary: string;
   confidence: number;
   imageMatchesDescription: boolean;
   detectedIssueFromImage: string;
+  duplicateCheckResult: string;
+  isDuplicate: boolean;
+  missingInfoFlags: string[];
+  recommendedAction: 'accept' | 'flag' | 'reject';
   fraudRiskScore: number;
   fraudProbability: number;
   fraudRiskLevel: 'Low' | 'Moderate' | 'High' | 'Critical';
@@ -156,15 +159,25 @@ export async function analyzeCivicReport(params: {
 }): Promise<ReportAnalysisResult> {
   const ai = getAiClient();
 
+  const nearbyMatches = params.recentReportsContext.filter((r) => {
+    const dLat = Math.abs(r.lat - params.lat);
+    const dLng = Math.abs(r.lng - params.lng);
+    return dLat < 0.0025 && dLng < 0.0025 && r.category === params.category;
+  });
+
   const nearbyOrSimilar = params.recentReportsContext
     .slice(0, 12)
     .map((r) => `- [${r.id}] (${r.category}) "${r.title}" at (${r.lat.toFixed(4)}, ${r.lng.toFixed(4)}): ${r.description.slice(0, 140)}`)
     .join('\n');
 
-  const duplicateImageFound = Boolean(
-    params.currentImageHash &&
-    params.recentReportsContext.some((r) => r.imageHash && r.imageHash === params.currentImageHash)
-  );
+  const duplicateImageMatch = params.currentImageHash
+    ? params.recentReportsContext.find((r) => r.imageHash && r.imageHash === params.currentImageHash)
+    : undefined;
+
+  const missingInfoFlagsLocal: string[] = [];
+  if (!params.photoBase64) missingInfoFlagsLocal.push('No site photograph attached');
+  if (!params.address || params.address.trim().length < 5) missingInfoFlagsLocal.push('Specific street address/landmark missing');
+  if (params.description.trim().length < 20) missingInfoFlagsLocal.push('Description is brief (< 20 characters)');
 
   const prompt = `You are SEVA AI & SEVA TRUST (Civic Intelligence & Report Integrity Engine for Indian cities).
 Analyze the following civic report submission objectively.
@@ -178,7 +191,8 @@ Submitted Data:
 - Address: ${params.address}
 - GPS Coordinates: (${params.lat}, ${params.lng})
 - Photo Attached: ${params.photoBase64 ? 'Yes (see attached image)' : 'No'}
-- Exact Duplicate Image Hash Detected in Recent Reports: ${duplicateImageFound ? 'YES' : 'No'}
+- Exact Duplicate Image Hash Detected in Recent Reports: ${duplicateImageMatch ? `YES (matches ${duplicateImageMatch.id})` : 'No'}
+- Nearby Same-Category Reports (~250m): ${nearbyMatches.length}
 
 Recent Nearby/Existing Reports for Duplicate & Pattern Check:
 ${nearbyOrSimilar || 'None recorded yet.'}
@@ -188,18 +202,20 @@ Allowed Severities: Low, Medium, High, Critical
 
 Tasks:
 1. Identify what the issue is (and what the image shows if attached).
-2. Suggest the most accurate category and severity.
+2. Suggest the most accurate category (aiDetectedCategory / suggestedCategory) and severity.
 3. Recommend the municipal/safety department.
 4. Provide a concise 1-2 sentence operational summary.
-5. Assess evidenceCompleteness ("Complete" if photo + clear location + detailed description, "Partial" if minor piece missing, "Minimal" if sparse).
-6. Compute a SEVA TRUST fraud risk score (0-100) and risk probability (0.0-1.0) based on:
-   - Exact duplicate image hash (${duplicateImageFound ? '+45 risk' : '0'})
+5. Determine duplicateCheckResult (plain text summary) and isDuplicate boolean.
+6. List missingInfoFlags (array of concrete missing details such as missing photo, vague location, brief text, or empty if complete).
+7. Assess evidenceCompleteness ("Complete" if photo + clear location + detailed description, "Partial" if minor piece missing, "Minimal" if sparse).
+8. Compute confidence (0-100) and SEVA TRUST fraud risk score (0-100) based on:
+   - Exact duplicate image hash (${duplicateImageMatch ? '+45 risk' : '0'})
    - Repeated identical/near-identical description near same GPS
    - Image vs description mismatch (if photo is attached and clearly depicts something unrelated)
    - Nonsensical/spam/gibberish text or impossible location claim
-   - Note: Missing photo alone is NOT fraud (note in qualityNotes/evidenceCompleteness, keep score < 25 if description is genuine).
-7. Provide recommendedActionText (concise non-accusatory next step for the reviewing officer, e.g. "Approve and assign PWD unit" or "Flag for manual review and request clearer site photo").
-8. Classify fraudRiskLevel:
+   - Note: Missing photo alone is NOT fraud (note in missingInfoFlags/qualityNotes, keep score < 25 if description is genuine).
+9. Set recommendedAction: "accept" (genuine & clear), "flag" (uncertain / duplicate / mismatch / needs human check), or "reject" (obvious spam/gibberish/impossible claim) and concise recommendedActionText.
+10. Classify fraudRiskLevel:
    - 0-29: Low -> recommendedQueueAction: "normal_routing"
    - 30-59: Moderate -> recommendedQueueAction: "additional_validation"
    - 60-79: High -> recommendedQueueAction: "restricted_verification_queue"
@@ -231,6 +247,10 @@ Tasks:
           confidence: { type: Type.NUMBER },
           imageMatchesDescription: { type: Type.BOOLEAN },
           detectedIssueFromImage: { type: Type.STRING },
+          duplicateCheckResult: { type: Type.STRING },
+          isDuplicate: { type: Type.BOOLEAN },
+          missingInfoFlags: { type: Type.ARRAY, items: { type: Type.STRING } },
+          recommendedAction: { type: Type.STRING, enum: ['accept', 'flag', 'reject'] },
           fraudRiskScore: { type: Type.INTEGER },
           fraudRiskLevel: { type: Type.STRING, enum: ['Low', 'Moderate', 'High', 'Critical'] },
           fraudIndicators: { type: Type.ARRAY, items: { type: Type.STRING } },
@@ -256,6 +276,10 @@ Tasks:
           'confidence',
           'imageMatchesDescription',
           'detectedIssueFromImage',
+          'duplicateCheckResult',
+          'isDuplicate',
+          'missingInfoFlags',
+          'recommendedAction',
           'fraudRiskScore',
           'fraudRiskLevel',
           'fraudIndicators',
@@ -271,15 +295,47 @@ Tasks:
 
   const parsed = parseJsonResponse<ReportAnalysisResult>(response.text, {} as ReportAnalysisResult);
   const clampedScore = Math.max(0, Math.min(100, Math.round(parsed.fraudRiskScore ?? 10)));
+  const rawConf = typeof parsed.confidence === 'number' ? parsed.confidence : 0;
+  const normalizedConf = rawConf > 0 && rawConf <= 1 ? Math.round(rawConf * 100) : Math.max(0, Math.min(100, Math.round(rawConf)));
   const validCat = CIVIC_CATEGORIES.includes(parsed.suggestedCategory as any)
     ? parsed.suggestedCategory
     : params.category;
 
+  const duplicateCheckResult =
+    parsed.duplicateCheckResult ||
+    (duplicateImageMatch
+      ? `Exact image match detected with ${duplicateImageMatch.id}`
+      : nearbyMatches.length > 0
+      ? `${nearbyMatches.length} recent same-category report(s) within ~250m (${nearbyMatches[0].id})`
+      : 'No duplicate image or nearby cluster detected');
+
+  const mergedMissing = Array.from(
+    new Set([
+      ...(Array.isArray(parsed.missingInfoFlags) ? parsed.missingInfoFlags : []),
+      ...missingInfoFlagsLocal,
+    ])
+  );
+
+  const recommendedAction: 'accept' | 'flag' | 'reject' =
+    parsed.recommendedAction === 'reject' || parsed.recommendedAction === 'flag' || parsed.recommendedAction === 'accept'
+      ? parsed.recommendedAction
+      : clampedScore >= 80
+      ? 'reject'
+      : clampedScore >= 45 || Boolean(duplicateImageMatch)
+      ? 'flag'
+      : 'accept';
+
   return {
     ...parsed,
     suggestedCategory: validCat,
+    aiDetectedCategory: validCat,
+    confidence: normalizedConf,
     recommendedDepartment:
       DEPARTMENT_BY_CATEGORY[validCat] || parsed.recommendedDepartment || 'Municipal Corporation',
+    duplicateCheckResult,
+    isDuplicate: Boolean(parsed.isDuplicate || duplicateImageMatch),
+    missingInfoFlags: mergedMissing,
+    recommendedAction,
     fraudRiskScore: clampedScore,
     fraudProbability: Number((clampedScore / 100).toFixed(2)),
     evidenceCompleteness:
@@ -310,7 +366,6 @@ export interface SaathiAssistantResponse {
     | 'report'
     | 'shield'
     | 'medical'
-    | 'accident'
     | 'complaints'
     | 'heatmap'
     | 'rewards'
@@ -365,12 +420,11 @@ CRITICAL HONESTY & GROUNDING RULES:
 6. Verified SEVA AI platform workflows you can explain accurately:
    - Potholes, Waste, Drains, Traffic, Safety, Animal Welfare: Open "Report Issue" (supports both manual form and the guided 5-step "Report an Issue Using Voice" wizard), capture live GPS + optional photo, run AI & Seva Trust verification, and confirm submission.
    - Follow-Up Tracking & Disputes: "My Reports" supports checking status by Reference Number (via voice or text), uploading requested additional evidence photos, confirming resolution, or disputing/reopening an unresolved issue.
-   - SOS Emergency ("Seva Shield"): Independent module for Women & Personal Safety SOS with 2-second hold button, 5-second countdown, trusted contacts SMS alerting, live GPS share link, and "I'm Safe" resolution.
-   - Medical Assistance ("medical"): Independent section with direct 112/108 helpline calling, strictly filtered nearby hospitals & police stations (1-15 km), live GPS/manual location fallback, and medical responder requests.
-   - Road Accident Help ("accident"): Independent section with direct 112/108 calling, people affected count, photo evidence, caregiver SMS alerts, and nearby trauma hospitals/police.
+   - SOS Emergency ("Seva Shield"): Independent module for Women & Personal Safety SOS with 2-second hold button, 5-second countdown, trusted contacts SMS alerting, direct Caregiver calling, live GPS share link, and "I'm Safe" resolution.
+   - Medical Assistance ("medical"): Independent section with direct 112/108 helpline calling, direct Caregiver calling, strictly filtered nearby hospitals & police stations (1-15 km), live GPS/manual location fallback, and medical responder requests.
    - Citizen Complaint Box ("complaints"): Independent section to file confidential or anonymous complaints against an officer or department (reviewed independently by a Department Supervisor or Admin).
 7. If the user is describing a civic problem, set intent="report_issue" and populate extractedReport with category (must match one of: ${CIVIC_CATEGORIES.join(', ')}), concise title, clean description, severity, locationMentioned (only if stated by user; otherwise empty string — NEVER invent a location), and missingFields.
-8. If user asks to open a section (e.g. "open medical help", "report accident", "open complaint box", "go to safety map", "open my reports"), set intent="navigation" and navigationTarget.`;
+8. If user asks to open a section (e.g. "open medical help", "open complaint box", "go to safety map", "open my reports"), set intent="navigation" and navigationTarget.`;
 
   const contextBlock = `Current Context:
 - Signed In: ${params.userContext.isSignedIn} (Role: ${params.userContext.role})
@@ -390,7 +444,7 @@ ${contextBlock}
 
 Output JSON schema notes:
 - If intent == "report_issue", fill extractedCategory, extractedTitle, extractedDescription, extractedSeverity, extractedLocation, extractedMissingFields. Otherwise leave them empty strings / empty array.
-- If intent == "navigation", set navigationTarget to one of home, explore, report, shield, medical, accident, complaints, heatmap, rewards, reports, profile, authority. Otherwise "home".
+- If intent == "navigation", set navigationTarget to one of home, explore, report, shield, medical, complaints, heatmap, rewards, reports, profile, authority. Otherwise "home".
 - Set shouldTriggerSosFlow true ONLY when citizen explicitly needs SOS workflow opened.`;
 
   const response = await generateWithFallback(ai, (model) => ({
@@ -423,7 +477,7 @@ Output JSON schema notes:
           extractedMissingFields: { type: Type.ARRAY, items: { type: Type.STRING } },
           navigationTarget: {
             type: Type.STRING,
-            enum: ['home', 'explore', 'report', 'shield', 'medical', 'accident', 'complaints', 'heatmap', 'rewards', 'reports', 'profile', 'authority'],
+            enum: ['home', 'explore', 'report', 'shield', 'medical', 'complaints', 'heatmap', 'rewards', 'reports', 'profile', 'authority'],
           },
           shouldTriggerSosFlow: { type: Type.BOOLEAN },
         },

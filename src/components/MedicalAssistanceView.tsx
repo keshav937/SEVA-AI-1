@@ -55,6 +55,9 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
   const [manualSearchError, setManualSearchError] = useState<string | null>(null);
 
   const [contacts, setContacts] = useState<EmergencyContact[]>([]);
+  const [backendCaregivers, setBackendCaregivers] = useState<EmergencyContact[]>([]);
+  const [selectedCaregiverId, setSelectedCaregiverId] = useState('');
+  const [caregiverCallMsg, setCaregiverCallMsg] = useState<string | null>(null);
   const [condition, setCondition] = useState('');
   const [severity, setSeverity] = useState<'Urgent' | 'Critical'>('Urgent');
   const [citizenPhone, setCitizenPhone] = useState(profile?.phone || '');
@@ -92,13 +95,38 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
   useEffect(() => {
     if (!firebaseUser) {
       setContacts([]);
+      setBackendCaregivers([]);
       return;
     }
+    fetch(`/api/caregivers/${encodeURIComponent(firebaseUser.uid)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (Array.isArray(d.caregivers)) setBackendCaregivers(d.caregivers);
+      })
+      .catch(() => {});
+
     const q = query(collection(db, 'emergencyContacts'), where('uid', '==', firebaseUser.uid));
     return onSnapshot(q, (snap) => {
       setContacts(snap.docs.map((d) => ({ id: d.id, ...d.data() } as EmergencyContact)));
     });
   }, [firebaseUser]);
+
+  const mergedContacts = React.useMemo(() => {
+    const map = new Map<string, EmergencyContact>();
+    for (const c of contacts) map.set(c.phone, c);
+    for (const b of backendCaregivers) {
+      if (!map.has(b.phone)) map.set(b.phone, b);
+    }
+    return Array.from(map.values());
+  }, [contacts, backendCaregivers]);
+
+  useEffect(() => {
+    if (!selectedCaregiverId && mergedContacts.length > 0) {
+      setSelectedCaregiverId(mergedContacts[0].id);
+    } else if (selectedCaregiverId && !mergedContacts.some((c) => c.id === selectedCaregiverId)) {
+      setSelectedCaregiverId(mergedContacts[0]?.id || '');
+    }
+  }, [mergedContacts, selectedCaregiverId]);
 
   useEffect(() => {
     if (!firebaseUser) return;
@@ -179,7 +207,7 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
     setSubmitting(true);
     try {
       const nearestHospital = places.find((p) => p.subcategory === 'hospital')?.name;
-      const consented = contacts.filter((c) => c.consentGiven).map((c) => ({ name: c.name, phone: c.phone }));
+      const consented = mergedContacts.filter((c) => c.consentGiven).map((c) => ({ name: c.name, phone: c.phone }));
       const res = await fetch('/api/medical/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -217,6 +245,37 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
   const hospitals = places.filter((p) => p.subcategory === 'hospital');
   const policeStations = places.filter((p) => p.subcategory === 'police');
 
+  const selectedCaregiver = mergedContacts.find((c) => c.id === selectedCaregiverId) || mergedContacts[0];
+  const selectedCaregiverTel =
+    selectedCaregiver && /^(\+[1-9][0-9]{7,14}|[6-9][0-9]{9})$/.test(selectedCaregiver.phone.replace(/[\s()-]/g, ''))
+      ? `tel:${selectedCaregiver.phone.replace(/[\s()-]/g, '')}`
+      : undefined;
+
+  const handleCaregiverCall = async (e: React.MouseEvent) => {
+    setCaregiverCallMsg(null);
+    if (!selectedCaregiver || !selectedCaregiverTel) {
+      e.preventDefault();
+      setCaregiverCallMsg('Select a caregiver with a valid phone number in Seva Shield before calling.');
+      return;
+    }
+    if (firebaseUser) {
+      fetch('/api/calls/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uid: firebaseUser.uid,
+          caregiverId: selectedCaregiver.id,
+          caregiverName: selectedCaregiver.name,
+          caregiverPhone: selectedCaregiver.phone,
+          source: 'medical_assistance',
+        }),
+      }).catch(() => {});
+    }
+    setCaregiverCallMsg(
+      `Phone dialer opened for ${selectedCaregiver.name} (${selectedCaregiver.phone}) — verify call connection on your device.`
+    );
+  };
+
   return (
     <div className="space-y-6">
       {/* Header & Direct Emergency Helplines */}
@@ -230,7 +289,7 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
             Medical Assistance &amp; Nearby Hospitals
           </h1>
           <p className="text-sm text-slate-600 mt-1">
-            Direct 112 / 108 emergency call access, live GPS hospital &amp; police finder, caregiver SMS alerts, and real-time Medical Services dispatch.
+            Direct 112 / 108 emergency call access, direct caregiver calling, live GPS hospital &amp; police finder, caregiver SMS alerts, and real-time Medical Services dispatch.
           </p>
         </div>
 
@@ -248,29 +307,66 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
         </button>
       </div>
 
-      {/* Real Call Helplines Bar */}
-      <div className="border border-red-200 bg-red-50 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
-        <div className="space-y-1">
-          <div className="text-sm font-bold text-red-950">Direct Emergency Call Services</div>
-          <p className="text-xs text-red-900">
-            Tapping a call button opens your device&apos;s native phone dialer. Use a phone-capable device for immediate voice dispatch.
-          </p>
+      {/* Real Call Helplines & Direct Caregiver Call Bar */}
+      <div className="border border-red-200 bg-red-50 rounded-xl p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="text-sm font-bold text-red-950">Direct Emergency &amp; Caregiver Call Services</div>
+            <p className="text-xs text-red-900">
+              Tapping a call button opens your device&apos;s native phone dialer. Verify the call connection directly on your phone.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <a
+              href="tel:108"
+              className="inline-flex items-center gap-2 px-4 py-2.5 bg-red-600 text-white text-xs font-semibold rounded-lg hover:bg-red-700"
+            >
+              <PhoneCall className="w-4 h-4" />
+              Call Ambulance (108)
+            </a>
+            <a
+              href="tel:112"
+              className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-900 text-white text-xs font-semibold rounded-lg hover:bg-slate-800"
+            >
+              <Phone className="w-4 h-4" />
+              Call Emergency (112)
+            </a>
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2.5">
-          <a
-            href="tel:108"
-            className="inline-flex items-center gap-2 px-4 py-2.5 bg-red-600 text-white text-xs font-semibold rounded-lg hover:bg-red-700"
-          >
-            <PhoneCall className="w-4 h-4" />
-            Call Ambulance (108)
-          </a>
-          <a
-            href="tel:112"
-            className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-900 text-white text-xs font-semibold rounded-lg hover:bg-slate-800"
-          >
-            <Phone className="w-4 h-4" />
-            Call Emergency (112)
-          </a>
+
+        <div className="pt-3 border-t border-red-200/80 flex flex-wrap items-center gap-2.5">
+          <span className="text-xs font-semibold text-red-950">Caregiver Quick Call:</span>
+          {mergedContacts.length === 0 ? (
+            <span className="text-xs text-red-900">No saved caregivers yet (add trusted contacts in Seva Shield SOS).</span>
+          ) : (
+            <>
+              <select
+                value={selectedCaregiver?.id || ''}
+                onChange={(e) => setSelectedCaregiverId(e.target.value)}
+                aria-label="Select caregiver to call from Medical Assistance"
+                className="text-xs bg-white border border-red-200 rounded-lg px-2.5 py-2 text-slate-900"
+              >
+                {mergedContacts.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({c.relation}) · {c.phone}
+                  </option>
+                ))}
+              </select>
+              <a
+                href={selectedCaregiverTel || '#call-caregiver'}
+                onClick={handleCaregiverCall}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-green-900 text-white text-xs font-semibold rounded-lg hover:bg-green-800"
+              >
+                <PhoneCall className="w-3.5 h-3.5" />
+                Call Caregiver
+              </a>
+            </>
+          )}
+          {caregiverCallMsg && (
+            <span className="text-xs text-slate-900 bg-white border border-red-200 rounded px-2.5 py-1">
+              {caregiverCallMsg}
+            </span>
+          )}
         </div>
       </div>
 
@@ -403,8 +499,8 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
 
             <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-3">
               <strong>Caregiver SMS Alert:</strong>{' '}
-              {contacts.filter((c) => c.consentGiven).length > 0
-                ? `${contacts.filter((c) => c.consentGiven).length} consented trusted contact(s) from Seva Shield will be notified.`
+              {mergedContacts.filter((c) => c.consentGiven).length > 0
+                ? `${mergedContacts.filter((c) => c.consentGiven).length} consented trusted contact(s) will be notified.`
                 : 'No consented trusted contacts saved yet (manage contacts inside Seva Shield).'}
             </div>
 

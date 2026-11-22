@@ -4,7 +4,6 @@ export type AppTab =
   | 'report'
   | 'shield'
   | 'medical'
-  | 'accident'
   | 'complaints'
   | 'heatmap'
   | 'rewards'
@@ -19,25 +18,26 @@ export type CivicCategory =
   | 'Waste Management'
   | 'Blocked Drains and Waterlogging'
   | 'Traffic and Road Obstructions'
-  | 'Road Accident Reporting'
   | 'Medical Assistance'
   | 'Women and Child Safety'
   | 'Animal Rescue and Welfare';
 
 export type SeverityLevel = 'Low' | 'Medium' | 'High' | 'Critical';
 
-export type ReportStatus =
-  | 'Submitted'
-  | 'Under Verification'
-  | 'Verified'
-  | 'Authority Acknowledged'
-  | 'Assigned'
-  | 'In Progress'
-  | 'Awaiting Evidence'
-  | 'Awaiting Authority Review'
-  | 'Resolved'
-  | 'Rejected'
-  | 'Reopened';
+export const REPORT_STATUS_FLOW = [
+  'Submitted',
+  'AI Verification Pending',
+  'Verified',
+  'Rejected with reason',
+  'Assigned',
+  'In Progress',
+  'Resolved – Awaiting Verification',
+  'Verified Resolution',
+  'Reopened',
+  'Escalated',
+] as const;
+
+export type ReportStatus = (typeof REPORT_STATUS_FLOW)[number];
 
 export type VerificationStatus =
   | 'Pending Verification'
@@ -99,8 +99,19 @@ export interface EscalationRecord {
   targetRole: string;
   reason: string;
   escalatedBy: string;
+  automated?: boolean;
   status: 'open' | 'acknowledged' | 'resolved';
   createdAt: string;
+}
+
+export interface SlaRule {
+  responseMinutes: number;
+  resolutionMinutes: number;
+}
+
+export interface SlaConfig {
+  bySeverity: Record<SeverityLevel, SlaRule>;
+  byCategoryOverride: Record<string, Partial<Record<SeverityLevel, SlaRule>>>;
 }
 
 export interface OfficerProfile {
@@ -154,8 +165,11 @@ export interface CivicReport {
   id: string;
   complaintId: string;
   referenceNumber?: string;
+  idempotencyKey?: string;
   reporterUid: string;
   reporterDisplayName: string;
+  reporterPhone?: string;
+  smsUpdatesOptIn?: boolean;
   category: CivicCategory | string;
   title: string;
   description: string;
@@ -177,8 +191,16 @@ export interface CivicReport {
   videoName?: string;
   aiSummary?: string;
   aiSuggestedCategory?: string;
+  aiDetectedCategory?: string;
   aiSuggestedSeverity?: string;
   aiConfidence?: number;
+  aiDuplicateCheck?: string;
+  aiMissingInfoFlags?: string[];
+  aiRecommendedAction?: 'accept' | 'flag' | 'reject';
+  aiVerificationError?: string;
+  aiVerifiedAt?: string;
+  imageMatchesDescription?: boolean;
+  detectedIssueFromImage?: string;
   fraudRiskScore: number;
   fraudProbability?: number;
   fraudRiskLevel: FraudRiskLevel;
@@ -208,8 +230,11 @@ export interface CivicReport {
     createdAt: string;
   }>;
   escalations?: EscalationRecord[];
+  escalationLevel?: 0 | 1 | 2 | 3;
   slaDeadlineAt?: string;
   slaResponseDeadlineAt?: string;
+  slaWarningSentAt?: string;
+  slaBreachedAt?: string;
   feedbackRating?: number;
   feedbackComment?: string;
   timeline?: Array<{
@@ -225,12 +250,17 @@ export interface CivicReport {
 
 export interface ReportAnalysisResponse {
   suggestedCategory: string;
+  aiDetectedCategory?: string;
   suggestedSeverity: SeverityLevel;
   recommendedDepartment: string;
   summary: string;
   confidence: number;
   imageMatchesDescription: boolean;
   detectedIssueFromImage: string;
+  duplicateCheckResult?: string;
+  isDuplicate?: boolean;
+  missingInfoFlags?: string[];
+  recommendedAction?: 'accept' | 'flag' | 'reject';
   fraudRiskScore: number;
   fraudProbability?: number;
   fraudRiskLevel: FraudRiskLevel;
@@ -273,15 +303,36 @@ export interface EmergencyContact {
   updatedAt?: any;
 }
 
+export interface CallLogEntry {
+  id: string;
+  uid: string;
+  caregiverId?: string;
+  caregiverName: string;
+  caregiverPhone: string;
+  source: 'seva_shield' | 'medical_assistance' | 'emergency_helpline';
+  status: 'dialer_opened' | 'invalid_phone';
+  createdAt: string;
+}
+
+export type SmsEventType =
+  | 'caregiver_added'
+  | 'sos_activated'
+  | 'medical_request'
+  | 'complaint_status_updated'
+  | 'resolution_completed'
+  | 'safety_alert'
+  | 'sos'
+  | 'medical';
+
 export interface SmsLogEntry {
   id: string;
   emergencyId: string;
-  emergencyType: 'sos' | 'medical' | 'accident';
+  emergencyType: SmsEventType;
   recipientName: string;
   recipientPhone: string;
   message: string;
   provider: string;
-  status: 'sent' | 'pending' | 'failed' | 'not_configured';
+  status: 'queued' | 'sent' | 'delivered' | 'pending' | 'failed' | 'not_configured';
   attempts: number;
   providerMessageId?: string;
   error?: string;
@@ -333,32 +384,6 @@ export interface MedicalRequestRecord {
   accuracyMeters?: number;
   address: string;
   nearestHospital?: string;
-  caregiverContactsCount: number;
-  smsStatus: string;
-  status: EmergencyRequestStatus;
-  assignedResponder?: string;
-  responseNotes?: string;
-  timeline: Array<{ label: string; actor: string; note?: string; timestamp: string }>;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface AccidentRequestRecord {
-  id: string;
-  trackingId: string;
-  uid: string;
-  citizenName: string;
-  citizenEmail?: string;
-  description: string;
-  severity: 'Moderate' | 'Severe' | 'Critical';
-  peopleAffected: number;
-  lat: number;
-  lng: number;
-  accuracyMeters?: number;
-  address: string;
-  photoUrls: UploadedFileRef[];
-  nearestHospital?: string;
-  nearestPolice?: string;
   caregiverContactsCount: number;
   smsStatus: string;
   status: EmergencyRequestStatus;
@@ -425,7 +450,7 @@ export interface PlatformNotification {
   priority: 'normal' | 'high' | 'emergency';
   title: string;
   message: string;
-  relatedType?: 'report' | 'sos' | 'medical' | 'accident' | 'complaint' | 'escalation';
+  relatedType?: 'report' | 'sos' | 'medical' | 'complaint' | 'escalation';
   relatedId?: string;
   read: boolean;
   createdAt: string;
@@ -461,6 +486,7 @@ export interface OfficerPerformanceMetric {
   avgResolutionHours: number;
   avgCitizenRating: number | null;
   performanceIndex: number;
+  qualifiedForRanking?: boolean;
   badges: string[];
 }
 
