@@ -23,7 +23,13 @@ import {
   transcribeWithElevenLabs,
   VOICE_LANGUAGE_CAPABILITIES,
 } from './server/elevenlabs.ts';
-import { fetchNearbyPlaces, geocodeLocationQuery, NearbyCategoryKey, reverseGeocode } from './server/places.ts';
+import {
+  fetchNearbyPlaces,
+  geocodeLocationQuery,
+  NearbyCategoryKey,
+  NearbySearchMode,
+  reverseGeocode,
+} from './server/places.ts';
 import {
   CaregiverRecipient,
   dispatchCaregiverSmsAlerts,
@@ -758,9 +764,21 @@ async function startServer() {
     const radius = Number(req.query.radius || 2000);
     const categoriesParam = String(req.query.categories || 'healthcare,public_safety');
     const strictMedicalSafety = String(req.query.strictMedicalSafety || '').toLowerCase() === 'true';
+    const rawMode = String(req.query.mode || '').trim() as NearbySearchMode;
+    const mode: NearbySearchMode | undefined =
+      rawMode === 'medical_facilities' ||
+      rawMode === 'police_only' ||
+      rawMode === 'strict_medical_safety' ||
+      rawMode === 'general'
+        ? rawMode
+        : undefined;
+    const forceRefresh = String(req.query.refresh || '').toLowerCase() === 'true';
 
     if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
       return res.status(400).json({ error: 'Valid GPS coordinates (lat, lng) are required.' });
+    }
+    if (!Number.isFinite(radius) || radius < 100 || radius > 50000) {
+      return res.status(400).json({ error: 'Search radius must be between 100 meters and 50,000 meters (50 km).' });
     }
 
     const categories = categoriesParam
@@ -775,6 +793,8 @@ async function startServer() {
         radiusMeters: radius,
         categories,
         strictMedicalSafety,
+        mode,
+        forceRefresh,
       });
       return res.json(data);
     } catch (err: any) {

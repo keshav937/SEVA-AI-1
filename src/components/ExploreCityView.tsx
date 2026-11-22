@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Clock,
@@ -26,14 +26,31 @@ const NEARBY_CATEGORIES = [
 ];
 
 const RADIUS_PRESETS = [
-  { label: '500 m', meters: 500 },
   { label: '1 km', meters: 1000 },
   { label: '2 km', meters: 2000 },
   { label: '5 km', meters: 5000 },
   { label: '10 km', meters: 10000 },
-  { label: '20 km', meters: 20000 },
-  { label: '50 km', meters: 50000 },
+  { label: '15 km', meters: 15000 },
+  { label: '25 km', meters: 25000 },
 ];
+
+function formatRadiusLabel(meters: number): string {
+  const km = meters / 1000;
+  return Number.isInteger(km) ? `${km} km` : `${km.toFixed(1)} km`;
+}
+
+function buildGoogleMapsNavUrl(
+  originLat: number | null,
+  originLng: number | null,
+  destLat: number,
+  destLng: number,
+  fallbackUrl: string
+): string {
+  if (originLat === null || originLng === null) return fallbackUrl;
+  return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(
+    `${originLat},${originLng}`
+  )}&destination=${encodeURIComponent(`${destLat},${destLng}`)}&travelmode=driving`;
+}
 
 export const ExploreCityView: React.FC = () => {
   const { lat, lng, address, accuracyMeters, gpsState, gpsError, requestCurrentLocation, setManualLocation } =
@@ -42,42 +59,67 @@ export const ExploreCityView: React.FC = () => {
   const [selectedCategories, setSelectedCategories] = useState<string[]>(['healthcare', 'public_safety', 'public_places']);
   const [radiusMeters, setRadiusMeters] = useState<number>(2000);
   const [customKm, setCustomKm] = useState<string>('');
+  const [customRadiusError, setCustomRadiusError] = useState<string | null>(null);
   const [places, setPlaces] = useState<NearbyPlace[]>([]);
   const [providerName, setProviderName] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
   const [searchText, setSearchText] = useState('');
+  const abortRef = useRef<AbortController | null>(null);
 
-  const loadPlaces = useCallback(async () => {
-    if (lat === null || lng === null || selectedCategories.length === 0) return;
-    setLoading(true);
-    setFetchError(null);
-    try {
-      const qs = new URLSearchParams({
-        lat: String(lat),
-        lng: String(lng),
-        radius: String(radiusMeters),
-        categories: selectedCategories.join(','),
-      });
-      const res = await fetch(`/api/places/nearby?${qs.toString()}`);
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to retrieve nearby places.');
-      }
-      setPlaces(data.places || []);
-      setProviderName(data.provider || 'OpenStreetMap Overpass API');
-    } catch (err: any) {
-      setFetchError(err?.message || 'Unable to query nearby places right now.');
-    } finally {
-      setLoading(false);
+  // Auto-request live GPS on mount if idle
+  useEffect(() => {
+    if (lat === null && lng === null && gpsState === 'idle') {
+      requestCurrentLocation();
     }
-  }, [lat, lng, radiusMeters, selectedCategories]);
+  }, [lat, lng, gpsState, requestCurrentLocation]);
+
+  const loadPlaces = useCallback(
+    async (forceRefresh = false) => {
+      if (lat === null || lng === null || selectedCategories.length === 0) return;
+      if (abortRef.current) abortRef.current.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      setLoading(true);
+      setFetchError(null);
+      try {
+        const qs = new URLSearchParams({
+          lat: String(lat),
+          lng: String(lng),
+          radius: String(radiusMeters),
+          categories: selectedCategories.join(','),
+          ...(forceRefresh ? { refresh: 'true' } : {}),
+        });
+        const res = await fetch(`/api/places/nearby?${qs.toString()}`, {
+          signal: controller.signal,
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to retrieve nearby places.');
+        }
+        const list: NearbyPlace[] = Array.isArray(data.places) ? data.places : [];
+        const strictlyBounded = list
+          .filter((p) => p.distanceMeters <= radiusMeters)
+          .sort((a, b) => a.distanceMeters - b.distanceMeters);
+        setPlaces(strictlyBounded);
+        setProviderName(data.provider || 'OpenStreetMap Overpass API');
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return;
+        setFetchError(err?.message || 'Unable to query nearby places right now.');
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    },
+    [lat, lng, radiusMeters, selectedCategories]
+  );
 
   useEffect(() => {
     if (lat !== null && lng !== null) {
-      loadPlaces();
+      loadPlaces(false);
     }
+    return () => abortRef.current?.abort();
   }, [lat, lng, radiusMeters, selectedCategories, loadPlaces]);
 
   const toggleCategory = (key: string) => {
@@ -88,8 +130,12 @@ export const ExploreCityView: React.FC = () => {
 
   const applyCustomRadius = (e: React.FormEvent) => {
     e.preventDefault();
+    setCustomRadiusError(null);
     const km = Number(customKm);
-    if (!Number.isFinite(km) || km < 0.2 || km > 50) return;
+    if (!Number.isFinite(km) || km < 0.2 || km > 50) {
+      setCustomRadiusError('Enter a custom radius between 0.2 and 50 km.');
+      return;
+    }
     setRadiusMeters(Math.round(km * 1000));
   };
 
@@ -118,10 +164,12 @@ export const ExploreCityView: React.FC = () => {
             : `${p.distanceMeters} m`
         }`,
         color: catMeta?.color || '#059669',
-        directionsUrl: p.directionsUrl,
+        directionsUrl: buildGoogleMapsNavUrl(lat, lng, p.lat, p.lng, p.directionsUrl),
       };
     });
-  }, [filteredPlaces]);
+  }, [filteredPlaces, lat, lng]);
+
+  const isGpsBusy = gpsState === 'requesting' || gpsState === 'acquiring' || gpsState === 'improving';
 
   return (
     <div className="space-y-6">
@@ -137,11 +185,12 @@ export const ExploreCityView: React.FC = () => {
 
         <button
           type="button"
+          disabled={isGpsBusy}
           onClick={() => requestCurrentLocation()}
-          className="inline-flex items-center gap-2 px-4 py-2.5 bg-green-900 text-white text-sm font-medium rounded-lg hover:bg-green-800 transition-colors whitespace-nowrap"
+          className="inline-flex items-center gap-2 px-4 py-2.5 bg-green-900 text-white text-sm font-medium rounded-lg hover:bg-green-800 transition-colors whitespace-nowrap disabled:opacity-60"
         >
-          <Navigation className="w-4 h-4" />
-          {gpsState === 'acquiring' ? 'Acquiring GPS...' : 'Use Live GPS'}
+          {isGpsBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Navigation className="w-4 h-4" />}
+          {isGpsBusy ? 'Detecting GPS...' : lat !== null ? 'Refresh Live GPS' : 'Use Live GPS'}
         </button>
       </div>
 
@@ -160,22 +209,33 @@ export const ExploreCityView: React.FC = () => {
               </>
             ) : (
               <span>
-                GPS coordinates not yet acquired. Click <strong>Use Live GPS</strong> or click anywhere on a map to sense nearby services.
+                {isGpsBusy
+                  ? 'Requesting browser permission and acquiring your live GPS coordinates...'
+                  : 'GPS coordinates not yet acquired. Click Use Live GPS or click anywhere on a map to sense nearby services.'}
               </span>
             )}
           </div>
         </div>
         {providerName && (
           <div className="text-xs text-slate-500">
-            Data: {providerName} · {filteredPlaces.length} results
+            Data: {providerName} · {filteredPlaces.length} results within {formatRadiusLabel(radiusMeters)}
           </div>
         )}
       </div>
 
       {gpsError && (
-        <div className="flex items-start gap-2 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
-          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>{gpsError}</span>
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+          <div className="flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>{gpsError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => requestCurrentLocation()}
+            className="px-2.5 py-1 bg-amber-900 text-white rounded font-semibold shrink-0 hover:bg-amber-800"
+          >
+            Retry Location
+          </button>
         </div>
       )}
 
@@ -208,12 +268,17 @@ export const ExploreCityView: React.FC = () => {
 
         <div className="pt-3 border-t border-slate-200 flex flex-wrap items-center justify-between gap-4">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-xs font-semibold text-slate-700 mr-1">Radius:</span>
+            <span className="text-xs font-semibold text-slate-700 mr-1">
+              Radius ({formatRadiusLabel(radiusMeters)}):
+            </span>
             {RADIUS_PRESETS.map((r) => (
               <button
                 key={r.meters}
                 type="button"
-                onClick={() => setRadiusMeters(r.meters)}
+                onClick={() => {
+                  setCustomRadiusError(null);
+                  setRadiusMeters(r.meters);
+                }}
                 className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap tabular-nums ${
                   radiusMeters === r.meters
                     ? 'bg-emerald-700 text-white'
@@ -225,24 +290,28 @@ export const ExploreCityView: React.FC = () => {
             ))}
           </div>
 
-          <form onSubmit={applyCustomRadius} className="flex items-center gap-2">
-            <input
-              type="number"
-              step="0.5"
-              min="0.2"
-              max="50"
-              value={customKm}
-              onChange={(e) => setCustomKm(e.target.value)}
-              placeholder="Custom km"
-              className="w-28 text-xs border border-slate-200 rounded-md px-2.5 py-1.5 text-slate-900"
-            />
-            <button
-              type="submit"
-              className="px-3 py-1.5 text-xs font-medium bg-slate-900 text-white rounded-md hover:bg-slate-800"
-            >
-              Set
-            </button>
-          </form>
+          <div className="flex flex-col items-end gap-1">
+            <form onSubmit={applyCustomRadius} className="flex items-center gap-2">
+              <input
+                type="number"
+                step="0.5"
+                min="0.2"
+                max="50"
+                value={customKm}
+                onChange={(e) => setCustomKm(e.target.value)}
+                placeholder="Custom km"
+                aria-label="Custom search radius in km"
+                className="w-28 text-xs border border-slate-200 rounded-md px-2.5 py-1.5 text-slate-900"
+              />
+              <button
+                type="submit"
+                className="px-3 py-1.5 text-xs font-medium bg-slate-900 text-white rounded-md hover:bg-slate-800"
+              >
+                Set Custom
+              </button>
+            </form>
+            {customRadiusError && <span className="text-[11px] text-red-700">{customRadiusError}</span>}
+          </div>
         </div>
       </div>
 
@@ -253,7 +322,17 @@ export const ExploreCityView: React.FC = () => {
             <LeafletMap
               centerLat={lat}
               centerLng={lng}
-              zoom={radiusMeters <= 1000 ? 15 : radiusMeters <= 5000 ? 13 : 11}
+              zoom={
+                radiusMeters <= 1500
+                  ? 15
+                  : radiusMeters <= 3000
+                  ? 14
+                  : radiusMeters <= 7000
+                  ? 13
+                  : radiusMeters <= 16000
+                  ? 12
+                  : 11
+              }
               userLat={lat}
               userLng={lng}
               userAccuracyMeters={accuracyMeters}
@@ -297,7 +376,7 @@ export const ExploreCityView: React.FC = () => {
             />
             <button
               type="button"
-              onClick={loadPlaces}
+              onClick={() => loadPlaces(true)}
               disabled={loading || lat === null}
               aria-label="Refresh nearby places"
               className="p-2.5 border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50"
@@ -309,7 +388,7 @@ export const ExploreCityView: React.FC = () => {
           {fetchError && (
             <div className="text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg p-3 flex items-center justify-between gap-2">
               <span>{fetchError}</span>
-              <button type="button" onClick={loadPlaces} className="font-semibold underline shrink-0">
+              <button type="button" onClick={() => loadPlaces(true)} className="font-semibold underline shrink-0">
                 Retry
               </button>
             </div>
@@ -318,76 +397,79 @@ export const ExploreCityView: React.FC = () => {
           {loading ? (
             <div className="border border-slate-200 rounded-xl p-8 flex flex-col items-center justify-center text-slate-600">
               <Loader2 className="w-6 h-6 animate-spin text-green-900 mb-2" />
-              <p className="text-sm">Querying OpenStreetMap Overpass within {(radiusMeters / 1000).toFixed(1)} km...</p>
+              <p className="text-sm">Querying OpenStreetMap Overpass within {formatRadiusLabel(radiusMeters)}...</p>
             </div>
           ) : filteredPlaces.length === 0 ? (
             <div className="border border-slate-200 rounded-xl p-8 text-center text-sm text-slate-600 bg-slate-50">
               {lat === null
                 ? 'Waiting for GPS coordinates.'
-                : 'No matching places found within this radius. Try expanding the radius or selecting additional categories.'}
+                : `No matching places found within ${formatRadiusLabel(radiusMeters)}. Try expanding the radius or selecting additional categories.`}
             </div>
           ) : (
             <div className="space-y-2.5 max-h-[410px] overflow-y-auto pr-1">
-              {filteredPlaces.map((place) => (
-                <div
-                  key={place.id}
-                  className={`border rounded-xl p-3.5 transition-colors bg-white ${
-                    selectedPlaceId === place.id ? 'border-green-900 bg-emerald-50/30' : 'border-slate-200'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <h4 className="font-display text-sm font-semibold text-slate-900">{place.name}</h4>
-                      <div className="text-xs text-slate-500 capitalize mt-0.5">
-                        {place.subcategory} ·{' '}
-                        <span className="font-mono tabular-nums text-green-900 font-medium">
-                          {place.distanceMeters >= 1000
-                            ? `${(place.distanceMeters / 1000).toFixed(2)} km`
-                            : `${place.distanceMeters} m`}
-                        </span>
+              {filteredPlaces.map((place) => {
+                const navUrl = buildGoogleMapsNavUrl(lat, lng, place.lat, place.lng, place.directionsUrl);
+                return (
+                  <div
+                    key={place.id}
+                    className={`border rounded-xl p-3.5 transition-colors bg-white ${
+                      selectedPlaceId === place.id ? 'border-green-900 bg-emerald-50/30' : 'border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <h4 className="font-display text-sm font-semibold text-slate-900">{place.name}</h4>
+                        <div className="text-xs text-slate-500 capitalize mt-0.5">
+                          {place.subcategory} ·{' '}
+                          <span className="font-mono tabular-nums text-green-900 font-medium">
+                            {place.distanceMeters >= 1000
+                              ? `${(place.distanceMeters / 1000).toFixed(2)} km`
+                              : `${place.distanceMeters} m`}
+                          </span>
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  <p className="text-xs text-slate-600 mt-1.5">{place.address}</p>
+                    <p className="text-xs text-slate-600 mt-1.5">{place.address}</p>
 
-                  {(place.phone || place.openingHours) && (
-                    <div className="mt-2 flex flex-wrap gap-3 text-xs text-slate-600">
-                      {place.phone && (
-                        <span className="inline-flex items-center gap-1">
-                          <Phone className="w-3 h-3" />
-                          {place.phone}
-                        </span>
-                      )}
-                      {place.openingHours && (
-                        <span className="inline-flex items-center gap-1">
-                          <Clock className="w-3 h-3" />
-                          {place.openingHours}
-                        </span>
-                      )}
+                    {(place.phone || place.openingHours) && (
+                      <div className="mt-2 flex flex-wrap gap-3 text-xs text-slate-600">
+                        {place.phone && (
+                          <a href={`tel:${place.phone}`} className="inline-flex items-center gap-1 hover:underline">
+                            <Phone className="w-3 h-3" />
+                            {place.phone}
+                          </a>
+                        )}
+                        {place.openingHours && (
+                          <span className="inline-flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {place.openingHours}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center gap-4 text-xs font-medium">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedPlaceId(place.id)}
+                        className="text-green-900 hover:underline"
+                      >
+                        View on Map
+                      </button>
+                      <a
+                        href={navUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-slate-700 hover:text-slate-900 hover:underline"
+                      >
+                        Navigate (Google Maps)
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
                     </div>
-                  )}
-
-                  <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center gap-4 text-xs font-medium">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedPlaceId(place.id)}
-                      className="text-green-900 hover:underline"
-                    >
-                      View on Map
-                    </button>
-                    <a
-                      href={place.directionsUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-slate-700 hover:text-slate-900 hover:underline"
-                    >
-                      Directions
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

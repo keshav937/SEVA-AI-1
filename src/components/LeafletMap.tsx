@@ -28,6 +28,9 @@ interface LeafletMapProps {
   userLng?: number | null;
   userAccuracyMeters?: number | null;
   searchRadiusMeters?: number | null;
+  primaryRadiusColor?: string;
+  secondaryRadiusMeters?: number | null;
+  secondaryRadiusColor?: string;
   markers?: MapMarkerItem[];
   heatmapCircles?: HeatmapCircleItem[];
   polylinePoints?: Array<[number, number]>;
@@ -44,6 +47,9 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
   userLng,
   userAccuracyMeters,
   searchRadiusMeters,
+  primaryRadiusColor = '#14532D',
+  secondaryRadiusMeters,
+  secondaryRadiusColor = '#1D4ED8',
   markers = [],
   heatmapCircles = [],
   polylinePoints = [],
@@ -90,8 +96,8 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
 
   useEffect(() => {
     if (!mapRef.current) return;
-    mapRef.current.setView([centerLat, centerLng], mapRef.current.getZoom(), { animate: true });
-  }, [centerLat, centerLng]);
+    mapRef.current.setView([centerLat, centerLng], zoom, { animate: true });
+  }, [centerLat, centerLng, zoom]);
 
   useEffect(() => {
     const group = layerGroupRef.current;
@@ -100,15 +106,32 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
 
     group.clearLayers();
 
-    // Search radius ring
+    // Primary search radius ring
     if (typeof userLat === 'number' && typeof userLng === 'number' && searchRadiusMeters) {
       L.circle([userLat, userLng], {
         radius: searchRadiusMeters,
-        color: '#14532D',
+        color: primaryRadiusColor,
         weight: 1.5,
         dashArray: '6 4',
-        fillColor: '#10B981',
-        fillOpacity: 0.05,
+        fillColor: primaryRadiusColor,
+        fillOpacity: 0.04,
+      }).addTo(group);
+    }
+
+    // Secondary search radius ring (when hospital and police radii differ)
+    if (
+      typeof userLat === 'number' &&
+      typeof userLng === 'number' &&
+      secondaryRadiusMeters &&
+      secondaryRadiusMeters !== searchRadiusMeters
+    ) {
+      L.circle([userLat, userLng], {
+        radius: secondaryRadiusMeters,
+        color: secondaryRadiusColor,
+        weight: 1.5,
+        dashArray: '4 4',
+        fillColor: secondaryRadiusColor,
+        fillOpacity: 0.03,
       }).addTo(group);
     }
 

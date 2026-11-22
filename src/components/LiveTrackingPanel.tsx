@@ -60,6 +60,7 @@ export const LiveTrackingPanel: React.FC = () => {
     improving: 'Improving GPS accuracy...',
     weak: 'Weak GPS signal',
     denied: 'Permission denied',
+    timeout: 'GPS timed out',
     unavailable: 'GPS unavailable',
     offline: 'Network disconnected',
   };
@@ -120,9 +121,18 @@ export const LiveTrackingPanel: React.FC = () => {
       )}
 
       {gpsError && (
-        <div className="flex items-start gap-2 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3.5 py-2.5">
-          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-          <span>{gpsError}</span>
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3.5 py-2.5">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>{gpsError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => requestCurrentLocation()}
+            className="px-2.5 py-1 bg-amber-900 text-white rounded font-semibold shrink-0 hover:bg-amber-800"
+          >
+            Retry GPS
+          </button>
         </div>
       )}
 

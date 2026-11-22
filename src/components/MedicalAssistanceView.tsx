@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
+  Clock,
   ExternalLink,
   HeartPulse,
   Loader2,
@@ -20,13 +21,36 @@ import { db } from '../lib/firebase';
 import { EmergencyContact, MedicalRequestRecord, NearbyPlace, SmsLogEntry } from '../types/seva';
 import { LeafletMap } from './LeafletMap';
 
-const EMERGENCY_RADIUS_OPTIONS = [
+const RADIUS_PRESETS = [
   { label: '1 km', meters: 1000 },
   { label: '2 km', meters: 2000 },
   { label: '5 km', meters: 5000 },
   { label: '10 km', meters: 10000 },
   { label: '15 km', meters: 15000 },
+  { label: '25 km', meters: 25000 },
 ];
+
+function formatRadiusLabel(meters: number): string {
+  const km = meters / 1000;
+  return Number.isInteger(km) ? `${km} km` : `${km.toFixed(1)} km`;
+}
+
+function formatDistanceLabel(meters: number): string {
+  return meters >= 1000 ? `${(meters / 1000).toFixed(2)} km` : `${meters} m`;
+}
+
+function buildGoogleMapsNavUrl(
+  originLat: number | null,
+  originLng: number | null,
+  destLat: number,
+  destLng: number,
+  fallbackUrl: string
+): string {
+  if (originLat === null || originLng === null) return fallbackUrl;
+  return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(
+    `${originLat},${originLng}`
+  )}&destination=${encodeURIComponent(`${destLat},${destLng}`)}&travelmode=driving`;
+}
 
 interface MedicalAssistanceViewProps {
   onSpeakText: (text: string) => void;
@@ -42,14 +66,33 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
     lastUpdated,
     gpsState,
     gpsError,
+    isManualOverride,
     requestCurrentLocation,
     setManualLocation,
   } = useLocationEngine();
 
-  const [radiusMeters, setRadiusMeters] = useState(5000);
-  const [places, setPlaces] = useState<NearbyPlace[]>([]);
-  const [placesLoading, setPlacesLoading] = useState(false);
-  const [placesError, setPlacesError] = useState<string | null>(null);
+  // Independent state for Nearby Hospitals & Medical Facilities
+  const [hospitalRadiusMeters, setHospitalRadiusMeters] = useState(5000);
+  const [hospitalCustomOpen, setHospitalCustomOpen] = useState(false);
+  const [hospitalCustomKm, setHospitalCustomKm] = useState('');
+  const [hospitalCustomError, setHospitalCustomError] = useState<string | null>(null);
+  const [hospitals, setHospitals] = useState<NearbyPlace[]>([]);
+  const [hospitalsLoading, setHospitalsLoading] = useState(false);
+  const [hospitalsError, setHospitalsError] = useState<string | null>(null);
+  const [hospitalsProvider, setHospitalsProvider] = useState<string>('');
+  const hospitalAbortRef = useRef<AbortController | null>(null);
+
+  // Independent state for Nearby Police Stations
+  const [policeRadiusMeters, setPoliceRadiusMeters] = useState(5000);
+  const [policeCustomOpen, setPoliceCustomOpen] = useState(false);
+  const [policeCustomKm, setPoliceCustomKm] = useState('');
+  const [policeCustomError, setPoliceCustomError] = useState<string | null>(null);
+  const [policeStations, setPoliceStations] = useState<NearbyPlace[]>([]);
+  const [policeLoading, setPoliceLoading] = useState(false);
+  const [policeError, setPoliceError] = useState<string | null>(null);
+  const [policeProvider, setPoliceProvider] = useState<string>('');
+  const policeAbortRef = useRef<AbortController | null>(null);
+
   const [manualSearchText, setManualSearchText] = useState('');
   const [searchingLocation, setSearchingLocation] = useState(false);
   const [manualSearchError, setManualSearchError] = useState<string | null>(null);
@@ -69,6 +112,13 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
   } | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [history, setHistory] = useState<MedicalRequestRecord[]>([]);
+
+  // Automatically request live GPS on mount if location is not yet acquired
+  useEffect(() => {
+    if (lat === null && lng === null && gpsState === 'idle') {
+      requestCurrentLocation();
+    }
+  }, [lat, lng, gpsState, requestCurrentLocation]);
 
   useEffect(() => {
     if (profile?.phone && !citizenPhone) setCitizenPhone(profile.phone);
@@ -111,7 +161,7 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
     });
   }, [firebaseUser]);
 
-  const mergedContacts = React.useMemo(() => {
+  const mergedContacts = useMemo(() => {
     const map = new Map<string, EmergencyContact>();
     for (const c of contacts) map.set(c.phone, c);
     for (const b of backendCaregivers) {
@@ -142,32 +192,125 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
     return () => ws.close();
   }, [firebaseUser, loadHistory]);
 
-  const fetchStrictNearby = useCallback(async () => {
-    if (lat === null || lng === null) return;
-    setPlacesLoading(true);
-    setPlacesError(null);
-    try {
-      const qs = new URLSearchParams({
-        lat: String(lat),
-        lng: String(lng),
-        radius: String(radiusMeters),
-        categories: 'healthcare,public_safety',
-        strictMedicalSafety: 'true',
-      });
-      const res = await fetch(`/api/places/nearby?${qs.toString()}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Unable to load nearby hospitals and police stations.');
-      setPlaces(data.places || []);
-    } catch (err: any) {
-      setPlacesError(err?.message || 'OpenStreetMap lookup unavailable.');
-    } finally {
-      setPlacesLoading(false);
-    }
-  }, [lat, lng, radiusMeters]);
+  // Fetch Nearby Hospitals, Clinics, Medical Centres & Emergency Medical Facilities
+  const fetchNearbyHospitals = useCallback(
+    async (forceRefresh = false) => {
+      if (lat === null || lng === null) return;
+      if (hospitalAbortRef.current) hospitalAbortRef.current.abort();
+      const controller = new AbortController();
+      hospitalAbortRef.current = controller;
+
+      setHospitalsLoading(true);
+      setHospitalsError(null);
+      try {
+        const qs = new URLSearchParams({
+          lat: String(lat),
+          lng: String(lng),
+          radius: String(hospitalRadiusMeters),
+          categories: 'healthcare',
+          mode: 'medical_facilities',
+          ...(forceRefresh ? { refresh: 'true' } : {}),
+        });
+        const res = await fetch(`/api/places/nearby?${qs.toString()}`, {
+          signal: controller.signal,
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unable to load nearby hospitals and medical facilities.');
+        const list: NearbyPlace[] = Array.isArray(data.places) ? data.places : [];
+        const strictlyBounded = list
+          .filter((p) => p.distanceMeters <= hospitalRadiusMeters)
+          .sort((a, b) => a.distanceMeters - b.distanceMeters);
+        setHospitals(strictlyBounded);
+        setHospitalsProvider(data.provider || 'OpenStreetMap Overpass API');
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return;
+        setHospitalsError(err?.message || 'Unable to query nearby hospitals right now.');
+      } finally {
+        if (!controller.signal.aborted) setHospitalsLoading(false);
+      }
+    },
+    [lat, lng, hospitalRadiusMeters]
+  );
+
+  // Fetch Nearby Police Stations independently
+  const fetchNearbyPolice = useCallback(
+    async (forceRefresh = false) => {
+      if (lat === null || lng === null) return;
+      if (policeAbortRef.current) policeAbortRef.current.abort();
+      const controller = new AbortController();
+      policeAbortRef.current = controller;
+
+      setPoliceLoading(true);
+      setPoliceError(null);
+      try {
+        const qs = new URLSearchParams({
+          lat: String(lat),
+          lng: String(lng),
+          radius: String(policeRadiusMeters),
+          categories: 'public_safety',
+          mode: 'police_only',
+          ...(forceRefresh ? { refresh: 'true' } : {}),
+        });
+        const res = await fetch(`/api/places/nearby?${qs.toString()}`, {
+          signal: controller.signal,
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unable to load nearby police stations.');
+        const list: NearbyPlace[] = Array.isArray(data.places) ? data.places : [];
+        const strictlyBounded = list
+          .filter((p) => p.distanceMeters <= policeRadiusMeters)
+          .sort((a, b) => a.distanceMeters - b.distanceMeters);
+        setPoliceStations(strictlyBounded);
+        setPoliceProvider(data.provider || 'OpenStreetMap Overpass API');
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return;
+        setPoliceError(err?.message || 'Unable to query nearby police stations right now.');
+      } finally {
+        if (!controller.signal.aborted) setPoliceLoading(false);
+      }
+    },
+    [lat, lng, policeRadiusMeters]
+  );
 
   useEffect(() => {
-    fetchStrictNearby();
-  }, [fetchStrictNearby]);
+    fetchNearbyHospitals(false);
+    return () => hospitalAbortRef.current?.abort();
+  }, [fetchNearbyHospitals]);
+
+  useEffect(() => {
+    fetchNearbyPolice(false);
+    return () => policeAbortRef.current?.abort();
+  }, [fetchNearbyPolice]);
+
+  const handleRefreshAllFromGps = async () => {
+    const loc = await requestCurrentLocation();
+    if (loc) {
+      fetchNearbyHospitals(true);
+      fetchNearbyPolice(true);
+    }
+  };
+
+  const applyHospitalCustomRadius = (e: React.FormEvent) => {
+    e.preventDefault();
+    setHospitalCustomError(null);
+    const km = Number(hospitalCustomKm);
+    if (!Number.isFinite(km) || km < 0.2 || km > 50) {
+      setHospitalCustomError('Enter a radius between 0.2 and 50 km.');
+      return;
+    }
+    setHospitalRadiusMeters(Math.round(km * 1000));
+  };
+
+  const applyPoliceCustomRadius = (e: React.FormEvent) => {
+    e.preventDefault();
+    setPoliceCustomError(null);
+    const km = Number(policeCustomKm);
+    if (!Number.isFinite(km) || km < 0.2 || km > 50) {
+      setPoliceCustomError('Enter a radius between 0.2 and 50 km.');
+      return;
+    }
+    setPoliceRadiusMeters(Math.round(km * 1000));
+  };
 
   const handleManualAddressSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -206,7 +349,7 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
 
     setSubmitting(true);
     try {
-      const nearestHospital = places.find((p) => p.subcategory === 'hospital')?.name;
+      const nearestHospital = hospitals[0]?.name;
       const consented = mergedContacts.filter((c) => c.consentGiven).map((c) => ({ name: c.name, phone: c.phone }));
       const res = await fetch('/api/medical/create', {
         method: 'POST',
@@ -242,9 +385,6 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
     }
   };
 
-  const hospitals = places.filter((p) => p.subcategory === 'hospital');
-  const policeStations = places.filter((p) => p.subcategory === 'police');
-
   const selectedCaregiver = mergedContacts.find((c) => c.id === selectedCaregiverId) || mergedContacts[0];
   const selectedCaregiverTel =
     selectedCaregiver && /^(\+[1-9][0-9]{7,14}|[6-9][0-9]{9})$/.test(selectedCaregiver.phone.replace(/[\s()-]/g, ''))
@@ -276,6 +416,64 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
     );
   };
 
+  const mapMarkers = useMemo(() => {
+    const medMarkers = hospitals.map((p) => ({
+      id: `med-${p.id}`,
+      lat: p.lat,
+      lng: p.lng,
+      title: p.name,
+      subtitle: `${p.subcategory} · ${formatDistanceLabel(p.distanceMeters)}`,
+      color: '#DC2626',
+      directionsUrl: buildGoogleMapsNavUrl(lat, lng, p.lat, p.lng, p.directionsUrl),
+    }));
+    const polMarkers = policeStations.map((p) => ({
+      id: `pol-${p.id}`,
+      lat: p.lat,
+      lng: p.lng,
+      title: p.name,
+      subtitle: `Police Station · ${formatDistanceLabel(p.distanceMeters)}`,
+      color: '#1D4ED8',
+      directionsUrl: buildGoogleMapsNavUrl(lat, lng, p.lat, p.lng, p.directionsUrl),
+    }));
+    return [...medMarkers, ...polMarkers];
+  }, [hospitals, policeStations, lat, lng]);
+
+  const maxRadius = Math.max(hospitalRadiusMeters, policeRadiusMeters);
+  const mapZoom =
+    maxRadius <= 1500
+      ? 15
+      : maxRadius <= 3000
+      ? 14
+      : maxRadius <= 7000
+      ? 13
+      : maxRadius <= 16000
+      ? 12
+      : 11;
+
+  const isGpsBusy = gpsState === 'requesting' || gpsState === 'acquiring' || gpsState === 'improving';
+  const gpsStatusLabel =
+    gpsState === 'acquired'
+      ? isManualOverride
+        ? 'Manual Location Set'
+        : 'Live GPS Active'
+      : gpsState === 'improving'
+      ? 'Refining GPS...'
+      : gpsState === 'weak'
+      ? 'Acquired (Low Accuracy)'
+      : gpsState === 'requesting'
+      ? 'Requesting Permission...'
+      : gpsState === 'acquiring'
+      ? 'Acquiring GPS...'
+      : gpsState === 'denied'
+      ? 'Permission Denied'
+      : gpsState === 'timeout'
+      ? 'Timed Out'
+      : gpsState === 'unavailable'
+      ? 'Unavailable'
+      : gpsState === 'offline'
+      ? 'Offline'
+      : 'Idle';
+
   return (
     <div className="space-y-6">
       {/* Header & Direct Emergency Helplines */}
@@ -297,7 +495,7 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
           type="button"
           onClick={() =>
             onSpeakText(
-              'Medical Assistance module. Use Call 108 for ambulance or Call 112 for national emergency services on your phone. Below you can refresh your live GPS location, view nearby hospitals and police stations, or dispatch a tracked medical alert to authorities and caregivers.'
+              'Medical Assistance module. Use Call 108 for ambulance or Call 112 for national emergency services on your phone. Below you can refresh your live GPS location, view nearby hospitals, clinics, medical centres, and police stations with independent radius controls, or dispatch a tracked medical alert to authorities and caregivers.'
             )
           }
           className="inline-flex items-center gap-2 px-4 py-2 bg-slate-900 text-white text-xs font-medium rounded-lg hover:bg-slate-800 whitespace-nowrap"
@@ -378,26 +576,30 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
             <div className="space-y-0.5">
               <div className="font-semibold text-slate-900">
                 Live Location Status:{' '}
-                <span className="uppercase font-mono text-green-900">
-                  {gpsState === 'acquired' || gpsState === 'improving'
-                    ? 'Available'
-                    : gpsState === 'denied'
-                    ? 'Permission Denied'
-                    : gpsState}
+                <span
+                  className={`uppercase font-mono ${
+                    gpsState === 'denied' || gpsState === 'unavailable' || gpsState === 'timeout' || gpsState === 'offline'
+                      ? 'text-red-700'
+                      : 'text-green-900'
+                  }`}
+                >
+                  {gpsStatusLabel}
                 </span>
               </div>
               {lat !== null && lng !== null ? (
                 <div className="text-slate-700">
-                  {address || 'GPS Acquired'} ·{' '}
+                  {address || 'Resolving address...'} ·{' '}
                   <span className="font-mono">
                     {lat.toFixed(5)}, {lng.toFixed(5)}
                   </span>
-                  {accuracyMeters ? ` (±${accuracyMeters}m)` : ' (Manual Location)'}
+                  {accuracyMeters !== null ? ` (±${accuracyMeters}m)` : ' (Manual Location)'}
                   {lastUpdated ? ` · Updated ${new Date(lastUpdated).toLocaleTimeString()}` : ''}
                 </div>
               ) : (
                 <div className="text-slate-600">
-                  Acquire live GPS or enter your locality/landmark below to find nearby hospitals and police stations.
+                  {isGpsBusy
+                    ? 'Detecting your live device GPS coordinates and reverse-geocoding street address...'
+                    : 'Allow location permission or enter your locality/city below to search nearby hospitals and police stations.'}
                 </div>
               )}
             </div>
@@ -405,21 +607,44 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
 
           <button
             type="button"
-            onClick={() => requestCurrentLocation()}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-green-900 text-white text-xs font-medium rounded-lg hover:bg-green-800"
+            disabled={isGpsBusy}
+            onClick={handleRefreshAllFromGps}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-green-900 text-white text-xs font-medium rounded-lg hover:bg-green-800 disabled:opacity-60"
           >
-            <Navigation className="w-3.5 h-3.5" />
-            {gpsState === 'acquiring' ? 'Acquiring GPS...' : 'Acquire Live GPS'}
+            {isGpsBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Navigation className="w-3.5 h-3.5" />}
+            {isGpsBusy
+              ? 'Detecting GPS...'
+              : gpsState === 'denied' || gpsState === 'timeout' || gpsState === 'unavailable'
+              ? 'Retry Live GPS'
+              : lat !== null
+              ? 'Refresh Live GPS'
+              : 'Detect Live GPS'}
           </button>
         </div>
 
-        {(gpsError || lat === null) && (
+        {gpsError && (
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-amber-950 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-800" />
+              <span>{gpsError}</span>
+            </div>
+            <button
+              type="button"
+              onClick={handleRefreshAllFromGps}
+              className="px-2.5 py-1 bg-amber-900 text-white rounded font-semibold shrink-0 hover:bg-amber-800"
+            >
+              Retry Location
+            </button>
+          </div>
+        )}
+
+        {(gpsError || lat === null || isManualOverride) && (
           <form onSubmit={handleManualAddressSearch} className="flex flex-wrap gap-2 pt-2 border-t border-slate-200">
             <input
               type="text"
               value={manualSearchText}
               onChange={(e) => setManualSearchText(e.target.value)}
-              placeholder="GPS unavailable? Enter city, locality, or street address..."
+              placeholder="GPS unavailable or testing another city? Enter city, locality, or street address..."
               className="flex-1 min-w-[220px] text-xs bg-white border border-slate-200 rounded-lg px-3 py-2"
             />
             <button
@@ -570,164 +795,324 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
           )}
         </div>
 
-        {/* Right: Strictly Filtered Hospitals & Police Stations + Map */}
+        {/* Right: Nearby Hospitals / Medical Facilities & Police Stations with Independent Radii + Map */}
         <div className="lg:col-span-7 border border-slate-200 rounded-xl bg-white p-5 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h2 className="font-display text-base font-bold text-slate-900">
-                Nearby Hospitals &amp; Police Stations Only
+                Nearby Hospitals, Medical Facilities &amp; Police Stations
               </h2>
               <p className="text-xs text-slate-500">
-                Live OpenStreetMap filtering excludes clinics, pharmacies, restaurants, and general shops.
+                Real-time geographical search sorted nearest-first with independent search radii and Google Maps navigation.
               </p>
             </div>
-            <div className="flex items-center gap-1.5">
-              {EMERGENCY_RADIUS_OPTIONS.map((r) => (
-                <button
-                  key={r.meters}
-                  type="button"
-                  onClick={() => setRadiusMeters(r.meters)}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md tabular-nums ${
-                    radiusMeters === r.meters
-                      ? 'bg-green-900 text-white'
-                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                  }`}
-                >
-                  {r.label}
-                </button>
-              ))}
-              <button
-                type="button"
-                onClick={fetchStrictNearby}
-                disabled={placesLoading || lat === null}
-                aria-label="Refresh nearby hospitals and police"
-                className="p-1.5 border border-slate-200 rounded-md hover:bg-slate-50"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${placesLoading ? 'animate-spin' : ''}`} />
-              </button>
+            <div className="text-[11px] text-slate-500 font-mono">
+              {hospitalsProvider || policeProvider || 'OpenStreetMap Live'}
             </div>
           </div>
 
-          {lat !== null && lng !== null && (
+          {lat !== null && lng !== null ? (
             <LeafletMap
               centerLat={lat}
               centerLng={lng}
-              zoom={radiusMeters <= 2000 ? 14 : radiusMeters <= 5000 ? 13 : 12}
+              zoom={mapZoom}
               userLat={lat}
               userLng={lng}
               userAccuracyMeters={accuracyMeters}
-              searchRadiusMeters={radiusMeters}
-              markers={places.map((p) => ({
-                id: p.id,
-                lat: p.lat,
-                lng: p.lng,
-                title: p.name,
-                subtitle: `${p.subcategory} · ${(p.distanceMeters / 1000).toFixed(2)} km`,
-                color: p.subcategory === 'hospital' ? '#DC2626' : '#1D4ED8',
-                directionsUrl: p.directionsUrl,
-              }))}
+              searchRadiusMeters={hospitalRadiusMeters}
+              primaryRadiusColor="#DC2626"
+              secondaryRadiusMeters={policeRadiusMeters}
+              secondaryRadiusColor="#1D4ED8"
+              markers={mapMarkers}
               onMapClick={(cLat, cLng) => setManualLocation(cLat, cLng)}
               heightClass="h-[250px]"
             />
-          )}
-
-          {placesError && (
-            <div className="text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg p-3">
-              {placesError}
-            </div>
-          )}
-
-          {placesLoading ? (
-            <div className="py-10 text-center text-xs text-slate-600 flex flex-col items-center">
-              <Loader2 className="w-5 h-5 animate-spin text-green-900 mb-2" />
-              Searching OpenStreetMap within {(radiusMeters / 1000).toFixed(0)} km for hospitals &amp; police stations...
-            </div>
-          ) : lat === null ? (
-            <div className="py-8 text-center text-xs text-slate-500">
-              Acquire live GPS or search your location manually to view nearby hospitals and police stations.
-            </div>
           ) : (
+            <div className="py-8 text-center text-xs text-slate-500 border border-dashed border-slate-200 rounded-xl bg-slate-50">
+              {isGpsBusy
+                ? 'Waiting for live GPS coordinates to map nearby hospitals and police stations...'
+                : 'Enable browser location permission or search your location manually above to view nearby hospitals and police stations.'}
+            </div>
+          )}
+
+          {lat !== null && lng !== null && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Hospitals Column */}
-              <div className="space-y-2">
-                <div className="text-xs font-bold text-red-700 uppercase tracking-wide">
-                  Nearby Hospitals ({hospitals.length})
+              {/* Independent Hospitals & Medical Facilities Column */}
+              <div className="space-y-3 border border-slate-200 rounded-xl p-3.5 bg-slate-50/50">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-bold text-red-700 uppercase tracking-wide">
+                      Hospitals &amp; Medical ({hospitals.length})
+                    </div>
+                    <div className="text-[11px] text-slate-600 font-mono">
+                      Selected radius: {formatRadiusLabel(hospitalRadiusMeters)}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => fetchNearbyHospitals(true)}
+                    disabled={hospitalsLoading}
+                    aria-label="Refresh nearby hospitals and medical facilities"
+                    className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium bg-white border border-slate-200 rounded-md hover:bg-slate-100 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${hospitalsLoading ? 'animate-spin' : ''}`} />
+                    Refresh
+                  </button>
                 </div>
-                {hospitals.length === 0 ? (
-                  <p className="text-xs text-slate-500 border border-slate-200 rounded-lg p-3">
-                    No hospitals returned in {(radiusMeters / 1000).toFixed(0)} km. Expand radius to 10 km or 15 km.
+
+                {/* Hospital Radius Presets + Custom */}
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-1">
+                    {RADIUS_PRESETS.map((r) => (
+                      <button
+                        key={r.meters}
+                        type="button"
+                        onClick={() => {
+                          setHospitalCustomOpen(false);
+                          setHospitalCustomError(null);
+                          setHospitalRadiusMeters(r.meters);
+                        }}
+                        className={`px-2 py-1 text-[11px] font-medium rounded tabular-nums ${
+                          !hospitalCustomOpen && hospitalRadiusMeters === r.meters
+                            ? 'bg-red-700 text-white'
+                            : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                        }`}
+                      >
+                        {r.label}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setHospitalCustomOpen((v) => !v)}
+                      className={`px-2 py-1 text-[11px] font-medium rounded ${
+                        hospitalCustomOpen || !RADIUS_PRESETS.some((r) => r.meters === hospitalRadiusMeters)
+                          ? 'bg-slate-900 text-white'
+                          : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      Custom
+                    </button>
+                  </div>
+
+                  {hospitalCustomOpen && (
+                    <form onSubmit={applyHospitalCustomRadius} className="flex items-center gap-1.5">
+                      <input
+                        type="number"
+                        step="0.5"
+                        min="0.2"
+                        max="50"
+                        value={hospitalCustomKm}
+                        onChange={(e) => setHospitalCustomKm(e.target.value)}
+                        placeholder="Radius (km)"
+                        aria-label="Custom hospital search radius in km"
+                        className="w-24 text-xs bg-white border border-slate-300 rounded px-2 py-1 text-slate-900"
+                      />
+                      <button
+                        type="submit"
+                        className="px-2.5 py-1 text-[11px] font-semibold bg-red-700 text-white rounded hover:bg-red-800"
+                      >
+                        Apply km
+                      </button>
+                    </form>
+                  )}
+                  {hospitalCustomError && <div className="text-[11px] text-red-700">{hospitalCustomError}</div>}
+                </div>
+
+                {hospitalsError && (
+                  <div className="text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg p-2.5">
+                    {hospitalsError}
+                  </div>
+                )}
+
+                {hospitalsLoading ? (
+                  <div className="py-8 text-center text-xs text-slate-600 flex flex-col items-center">
+                    <Loader2 className="w-5 h-5 animate-spin text-red-700 mb-2" />
+                    Searching hospitals, clinics &amp; medical centres within {formatRadiusLabel(hospitalRadiusMeters)}...
+                  </div>
+                ) : hospitals.length === 0 ? (
+                  <p className="text-xs text-slate-500 bg-white border border-slate-200 rounded-lg p-3">
+                    No hospitals or medical facilities found within {formatRadiusLabel(hospitalRadiusMeters)}. Try selecting 10 km, 15 km, 25 km, or a larger custom radius.
                   </p>
                 ) : (
-                  <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                    {hospitals.map((p) => (
-                      <div key={p.id} className="border border-slate-200 rounded-lg p-3 text-xs space-y-1">
-                        <div className="font-semibold text-slate-900">{p.name}</div>
-                        <div className="text-slate-500">
-                          Hospital · <span className="font-mono">{(p.distanceMeters / 1000).toFixed(2)} km</span>
-                        </div>
-                        <div className="text-slate-600">{p.address}</div>
-                        <div className="flex flex-wrap gap-3 pt-1">
-                          <a
-                            href={p.directionsUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 font-medium text-green-900 hover:underline"
-                          >
-                            Directions <ExternalLink className="w-3 h-3" />
-                          </a>
-                          {p.phone && (
-                            <a
-                              href={`tel:${p.phone}`}
-                              className="inline-flex items-center gap-1 font-medium text-red-700 hover:underline"
-                            >
-                              <Phone className="w-3 h-3" /> {p.phone}
-                            </a>
+                  <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                    {hospitals.map((p) => {
+                      const navUrl = buildGoogleMapsNavUrl(lat, lng, p.lat, p.lng, p.directionsUrl);
+                      return (
+                        <div key={p.id} className="bg-white border border-slate-200 rounded-lg p-3 text-xs space-y-1">
+                          <div className="font-semibold text-slate-900">{p.name}</div>
+                          <div className="text-slate-500 capitalize">
+                            {p.subcategory} ·{' '}
+                            <span className="font-mono text-red-700 font-semibold">
+                              {formatDistanceLabel(p.distanceMeters)}
+                            </span>
+                          </div>
+                          <div className="text-slate-600">{p.address}</div>
+                          {p.openingHours && (
+                            <div className="text-[11px] text-slate-500 inline-flex items-center gap-1">
+                              <Clock className="w-3 h-3" /> {p.openingHours}
+                            </div>
                           )}
+                          <div className="flex flex-wrap gap-3 pt-1">
+                            <a
+                              href={navUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 font-medium text-green-900 hover:underline"
+                            >
+                              Navigate (Google Maps) <ExternalLink className="w-3 h-3" />
+                            </a>
+                            {p.phone && (
+                              <a
+                                href={`tel:${p.phone}`}
+                                className="inline-flex items-center gap-1 font-medium text-red-700 hover:underline"
+                              >
+                                <Phone className="w-3 h-3" /> {p.phone}
+                              </a>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
 
-              {/* Police Stations Column */}
-              <div className="space-y-2">
-                <div className="text-xs font-bold text-blue-800 uppercase tracking-wide">
-                  Nearby Police Stations ({policeStations.length})
+              {/* Independent Police Stations Column */}
+              <div className="space-y-3 border border-slate-200 rounded-xl p-3.5 bg-slate-50/50">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-bold text-blue-800 uppercase tracking-wide">
+                      Nearby Police Stations ({policeStations.length})
+                    </div>
+                    <div className="text-[11px] text-slate-600 font-mono">
+                      Selected radius: {formatRadiusLabel(policeRadiusMeters)}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => fetchNearbyPolice(true)}
+                    disabled={policeLoading}
+                    aria-label="Refresh nearby police stations"
+                    className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium bg-white border border-slate-200 rounded-md hover:bg-slate-100 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${policeLoading ? 'animate-spin' : ''}`} />
+                    Refresh
+                  </button>
                 </div>
-                {policeStations.length === 0 ? (
-                  <p className="text-xs text-slate-500 border border-slate-200 rounded-lg p-3">
-                    No police stations returned in {(radiusMeters / 1000).toFixed(0)} km. Expand radius to 10 km or 15 km.
+
+                {/* Police Radius Presets + Custom */}
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-1">
+                    {RADIUS_PRESETS.map((r) => (
+                      <button
+                        key={r.meters}
+                        type="button"
+                        onClick={() => {
+                          setPoliceCustomOpen(false);
+                          setPoliceCustomError(null);
+                          setPoliceRadiusMeters(r.meters);
+                        }}
+                        className={`px-2 py-1 text-[11px] font-medium rounded tabular-nums ${
+                          !policeCustomOpen && policeRadiusMeters === r.meters
+                            ? 'bg-blue-700 text-white'
+                            : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                        }`}
+                      >
+                        {r.label}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setPoliceCustomOpen((v) => !v)}
+                      className={`px-2 py-1 text-[11px] font-medium rounded ${
+                        policeCustomOpen || !RADIUS_PRESETS.some((r) => r.meters === policeRadiusMeters)
+                          ? 'bg-slate-900 text-white'
+                          : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      Custom
+                    </button>
+                  </div>
+
+                  {policeCustomOpen && (
+                    <form onSubmit={applyPoliceCustomRadius} className="flex items-center gap-1.5">
+                      <input
+                        type="number"
+                        step="0.5"
+                        min="0.2"
+                        max="50"
+                        value={policeCustomKm}
+                        onChange={(e) => setPoliceCustomKm(e.target.value)}
+                        placeholder="Radius (km)"
+                        aria-label="Custom police station search radius in km"
+                        className="w-24 text-xs bg-white border border-slate-300 rounded px-2 py-1 text-slate-900"
+                      />
+                      <button
+                        type="submit"
+                        className="px-2.5 py-1 text-[11px] font-semibold bg-blue-700 text-white rounded hover:bg-blue-800"
+                      >
+                        Apply km
+                      </button>
+                    </form>
+                  )}
+                  {policeCustomError && <div className="text-[11px] text-red-700">{policeCustomError}</div>}
+                </div>
+
+                {policeError && (
+                  <div className="text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg p-2.5">
+                    {policeError}
+                  </div>
+                )}
+
+                {policeLoading ? (
+                  <div className="py-8 text-center text-xs text-slate-600 flex flex-col items-center">
+                    <Loader2 className="w-5 h-5 animate-spin text-blue-700 mb-2" />
+                    Searching police stations within {formatRadiusLabel(policeRadiusMeters)}...
+                  </div>
+                ) : policeStations.length === 0 ? (
+                  <p className="text-xs text-slate-500 bg-white border border-slate-200 rounded-lg p-3">
+                    No police stations found within {formatRadiusLabel(policeRadiusMeters)}. Try expanding to 10 km, 15 km, 25 km, or a larger custom radius.
                   </p>
                 ) : (
-                  <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                    {policeStations.map((p) => (
-                      <div key={p.id} className="border border-slate-200 rounded-lg p-3 text-xs space-y-1">
-                        <div className="font-semibold text-slate-900">{p.name}</div>
-                        <div className="text-slate-500">
-                          Police Station · <span className="font-mono">{(p.distanceMeters / 1000).toFixed(2)} km</span>
-                        </div>
-                        <div className="text-slate-600">{p.address}</div>
-                        <div className="flex flex-wrap gap-3 pt-1">
-                          <a
-                            href={p.directionsUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 font-medium text-green-900 hover:underline"
-                          >
-                            Directions <ExternalLink className="w-3 h-3" />
-                          </a>
-                          {p.phone && (
-                            <a
-                              href={`tel:${p.phone}`}
-                              className="inline-flex items-center gap-1 font-medium text-blue-800 hover:underline"
-                            >
-                              <Phone className="w-3 h-3" /> {p.phone}
-                            </a>
+                  <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                    {policeStations.map((p) => {
+                      const navUrl = buildGoogleMapsNavUrl(lat, lng, p.lat, p.lng, p.directionsUrl);
+                      return (
+                        <div key={p.id} className="bg-white border border-slate-200 rounded-lg p-3 text-xs space-y-1">
+                          <div className="font-semibold text-slate-900">{p.name}</div>
+                          <div className="text-slate-500">
+                            Police Station ·{' '}
+                            <span className="font-mono text-blue-800 font-semibold">
+                              {formatDistanceLabel(p.distanceMeters)}
+                            </span>
+                          </div>
+                          <div className="text-slate-600">{p.address}</div>
+                          {p.openingHours && (
+                            <div className="text-[11px] text-slate-500 inline-flex items-center gap-1">
+                              <Clock className="w-3 h-3" /> {p.openingHours}
+                            </div>
                           )}
+                          <div className="flex flex-wrap gap-3 pt-1">
+                            <a
+                              href={navUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 font-medium text-green-900 hover:underline"
+                            >
+                              Navigate (Google Maps) <ExternalLink className="w-3 h-3" />
+                            </a>
+                            {p.phone && (
+                              <a
+                                href={`tel:${p.phone}`}
+                                className="inline-flex items-center gap-1 font-medium text-blue-800 hover:underline"
+                              >
+                                <Phone className="w-3 h-3" /> {p.phone}
+                              </a>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
