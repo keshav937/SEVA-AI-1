@@ -750,6 +750,23 @@ export function getSmsLogs(): SmsLogEntry[] {
   return state.smsLogs;
 }
 
+export function updateSmsLogByProviderId(
+  providerMessageId: string,
+  status: SmsLogEntry['status'],
+  error?: string
+): SmsLogEntry | null {
+  const idx = state.smsLogs.findIndex((s) => s.providerMessageId === providerMessageId);
+  if (idx < 0) return null;
+  state.smsLogs[idx] = {
+    ...state.smsLogs[idx],
+    status,
+    ...(error ? { error } : {}),
+    updatedAt: new Date().toISOString(),
+  };
+  persistState();
+  return state.smsLogs[idx];
+}
+
 export function getRecentReportsForContext() {
   return state.reports.slice(0, 30).map((r) => ({
     id: r.complaintId,
@@ -1241,16 +1258,50 @@ export function computePerformanceAndAnalytics() {
     byStatus[r.status] = (byStatus[r.status] || 0) + 1;
   }
 
-  const last7Days: Array<{ date: string; submitted: number; resolved: number }> = [];
+  const last7Days: Array<{ date: string; label: string; total: number; submitted: number; resolved: number }> = [];
   for (let i = 6; i >= 0; i--) {
     const d = new Date(nowMs - i * 86400_000);
     const dayStr = d.toISOString().slice(0, 10);
+    const subCount = allReports.filter((r) => String(r.createdAt).startsWith(dayStr)).length;
+    const resCount = allReports.filter((r) => r.status === 'Resolved' && String(r.updatedAt).startsWith(dayStr)).length;
     last7Days.push({
       date: dayStr,
-      submitted: allReports.filter((r) => String(r.createdAt).startsWith(dayStr)).length,
-      resolved: allReports.filter((r) => r.status === 'Resolved' && String(r.updatedAt).startsWith(dayStr)).length,
+      label: dayStr.slice(5),
+      total: subCount,
+      submitted: subCount,
+      resolved: resCount,
     });
   }
+
+  const last30Days: Array<{ date: string; label: string; total: number; submitted: number; resolved: number }> = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(nowMs - i * 86400_000);
+    const dayStr = d.toISOString().slice(0, 10);
+    const subCount = allReports.filter((r) => String(r.createdAt).startsWith(dayStr)).length;
+    const resCount = allReports.filter((r) => r.status === 'Resolved' && String(r.updatedAt).startsWith(dayStr)).length;
+    last30Days.push({
+      date: dayStr,
+      label: dayStr.slice(5),
+      total: subCount,
+      submitted: subCount,
+      resolved: resCount,
+    });
+  }
+
+  const resolvedReportsAll = allReports.filter((r) => r.status === 'Resolved');
+  const resolutionRate =
+    allReports.length > 0 ? Math.round((resolvedReportsAll.length / allReports.length) * 100) : 0;
+  const overallAvgResolutionHours = resolvedReportsAll.length
+    ? Number(
+        (
+          resolvedReportsAll.reduce((acc, r) => {
+            const end = r.resolutionEvidence?.completedAt || r.updatedAt;
+            return acc + Math.max(0, (new Date(end).getTime() - new Date(r.createdAt).getTime()) / 3600_000);
+          }, 0) / resolvedReportsAll.length
+        ).toFixed(1)
+      )
+    : 0;
+  const animalRescueTotal = allReports.filter((r) => r.category === 'Animal Rescue and Welfare').length;
 
   return {
     officerLeaderboard: officerMetrics,
@@ -1258,9 +1309,21 @@ export function computePerformanceAndAnalytics() {
     byCategory,
     byStatus,
     last7Days,
+    last30Days,
+    analytics: {
+      totalReports: allReports.length,
+      resolvedCount: resolvedReportsAll.length,
+      resolutionRate,
+      avgResolutionHours: overallAvgResolutionHours,
+      animalRescueTotal,
+      byCategory,
+      byStatus,
+      last7Days,
+      last30Days,
+    },
     totals: {
       reports: allReports.length,
-      resolved: allReports.filter((r) => r.status === 'Resolved').length,
+      resolved: resolvedReportsAll.length,
       reopened: allReports.filter((r) => r.status === 'Reopened').length,
       overdue: allReports.filter(
         (r) => r.status !== 'Resolved' && r.status !== 'Rejected' && r.slaDeadlineAt && new Date(r.slaDeadlineAt).getTime() < nowMs
@@ -1269,6 +1332,7 @@ export function computePerformanceAndAnalytics() {
       medicalTotal: state.medicalRequests.length,
       accidentTotal: state.accidentRequests.length,
       sosTotal: state.sosEvents.length,
+      animalRescueTotal,
       complaintsAgainstAuthority: state.citizenComplaints.length,
     },
   };

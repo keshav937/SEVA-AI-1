@@ -1,0 +1,999 @@
+# SEVA AI — COMPLETE WEBSITE REPAIR, AUTHORITY DASHBOARD, EMERGENCY RESPONSE & VOICE AI IMPLEMENTATION
+
+**CRITICAL INSTRUCTION: DO NOT CREATE A NEW WEBSITE. WORK ON THE EXISTING SEVA AI PROJECT AND ITS EXISTING CODEBASE.**
+
+I want you to thoroughly inspect, debug, repair, upgrade, and fully implement every feature of my existing Seva AI website.
+
+The current Authority Dashboard is not functioning properly. Several features are incomplete or disconnected between the Citizen Dashboard and Authority Dashboard.
+
+Your task is to make Seva AI a fully connected, functional, real-time civic issue reporting, emergency assistance, authority accountability, and citizen engagement platform.
+
+Do not simply create attractive UI screens. Every button, form, dashboard, notification, API, database operation, voice feature, assignment workflow, tracking feature, and SMS integration must work.
+
+Do not remove existing working features. Preserve the existing design, navigation, authentication, citizen features, authority features, reward system, and other existing functionality while repairing and improving them.
+
+---
+
+## 1. AUTHORITY DASHBOARD — COMPLETE FUNCTIONAL IMPLEMENTATION
+
+This is the highest-priority requirement.
+
+When an authorized authority person logs in successfully, they must enter a fully functional Authority Dashboard.
+
+The authority dashboard must automatically display all relevant reports submitted through the Citizen Dashboard.
+
+### A. Centralized Issue Management
+
+Display all citizen-submitted issues in a centralized dashboard.
+
+Include:
+- Road damage and potholes.
+- Waste management and garbage.
+- Blocked drains.
+- Traffic and road obstructions.
+- Animal rescue.
+- Public safety issues.
+- Road accidents.
+- Other civic complaints.
+
+Every submitted report must automatically appear in the Authority Dashboard without manual refreshing.
+
+Display:
+- Unique report ID.
+- Incident title.
+- Detailed description.
+- Issue category.
+- Citizen information.
+- Submission date and time.
+- Live or reported location.
+- Uploaded photographs.
+- Current status.
+- Priority level.
+- Verification status.
+- Assigned authority officer.
+- Citizen follow-up reference number.
+
+Implement working filters:
+- All Reports.
+- New Reports.
+- Pending Verification.
+- Verified Reports.
+- Rejected Reports.
+- Assigned Reports.
+- In Progress.
+- Resolved.
+- Reopened.
+- High Priority.
+- Emergency Alerts.
+
+Add search by report ID, category, location, citizen name, and reference number.
+
+Every report must open into a detailed report management page.
+
+### B. AI-Powered Fraud Detection and Report Verification
+
+Implement a proper AI-assisted report verification system.
+
+When a citizen submits an issue, the system should analyze the submitted information.
+
+Check:
+- Duplicate reports.
+- Similar reports from the same location.
+- Suspicious or inconsistent descriptions.
+- Missing or insufficient evidence.
+- Potentially manipulated or irrelevant images, where supported.
+- Unusual reporting patterns.
+
+Generate:
+- Verification status.
+- Risk score.
+- Fraud probability or suspicion indicator.
+- Verification explanation.
+- Evidence completeness.
+- Recommended authority action.
+
+Use these statuses:
+1. Pending Verification.
+2. Verified.
+3. Flagged for Manual Review.
+4. Rejected.
+
+IMPORTANT:
+AI must never automatically declare a citizen guilty of fraud based only on a suspicion score. High-risk reports must be sent for human review.
+
+Authority officers must have options to:
+- Verify Report.
+- Flag for Review.
+- Reject Report.
+- Request Additional Evidence.
+- Add Verification Notes.
+
+When a report is verified, notify the citizen.
+
+When rejected, provide the citizen with a clear reason.
+
+When additional evidence is requested, notify the citizen and allow them to submit it.
+
+### C. Authority Assignment System
+
+Implement a complete working task assignment feature.
+
+Authority officers must be able to assign an issue:
+- To themselves.
+- To another authority officer.
+- To a relevant department.
+- To an available field worker.
+
+Display available officers with:
+- Officer name.
+- Department.
+- Designation.
+- Assigned workload.
+- Availability.
+- Contact information where authorized.
+
+Add a functional Assign Issue button.
+
+Allow reassignment when required.
+
+Maintain assignment history:
+- Previously assigned officer.
+- Newly assigned officer.
+- Assignment date.
+- Reason for reassignment.
+- Assignment status.
+
+The assigned officer must receive a notification.
+
+The citizen should be able to see the responsible department and relevant progress updates without exposing unnecessary personal information.
+
+### D. Work Progress and Status Management
+
+Implement the following complete workflow:
+
+Citizen submits report → AI verification → Authority verifies → Officer assignment → Work in Progress → Evidence Upload → Authority Review → Resolved → Citizen Feedback.
+
+Authority officers must be able to update statuses:
+
+- Submitted.
+- Under Verification.
+- Verified.
+- Assigned.
+- In Progress.
+- Awaiting Evidence.
+- Awaiting Authority Review.
+- Resolved.
+- Rejected.
+- Reopened.
+
+Every status change must:
+1. Update the database.
+2. Update the Authority Dashboard.
+3. Update the Citizen Dashboard.
+4. Generate a notification.
+5. Record the date and time.
+6. Maintain a complete activity history.
+
+### E. Mandatory Resolution Evidence Upload
+
+This feature is extremely important.
+
+When an officer claims that a civic issue has been resolved, they must upload actual photographic evidence.
+
+Implement:
+- Upload Before Photo.
+- Upload After Photo.
+- Upload Multiple Resolution Photos.
+- Add Resolution Description.
+- Add Work Completion Notes.
+- Record Completion Date and Time.
+- Record Resolving Officer.
+
+Allow JPG, JPEG, PNG, and supported image formats.
+
+Store uploaded evidence in persistent storage and associate it with the correct report ID.
+
+Display before-and-after evidence in the Authority Dashboard and Citizen Dashboard.
+
+A report must not become fully resolved merely because an officer clicks the Resolve button.
+
+Require resolution evidence and completion notes.
+
+Implement an authority verification step before final closure.
+
+Allow the citizen to:
+- View resolution photographs.
+- View completion details.
+- Confirm resolution.
+- Raise a concern if the problem remains unresolved.
+- Request reopening.
+
+If the citizen disputes the resolution, reopen the report and notify the assigned authority.
+
+Maintain a permanent resolution history.
+
+---
+
+## 2. AUTHORITY ACCOUNTABILITY AND INCENTIVE SYSTEM
+
+Implement the authority motivation and accountability features discussed for Seva AI.
+
+The platform must give authorities a genuine reason to resolve citizen problems efficiently.
+
+### A. Authority Performance Dashboard
+
+Display:
+- Total reports received.
+- Reports verified.
+- Reports assigned.
+- Reports resolved.
+- Reports pending.
+- Average resolution time.
+- Overdue reports.
+- Citizen satisfaction score.
+- Reopened reports.
+- Resolution success rate.
+
+Add visual charts for daily, weekly, and monthly performance.
+
+### B. Authority Performance Score
+
+Introduce an Authority Performance Index.
+
+Calculate performance using:
+- Resolution efficiency.
+- Timely action.
+- Quality of resolution evidence.
+- Citizen feedback.
+- Reopened complaint rate.
+- Verification accuracy.
+- Pending issue management.
+
+Do not reward officers merely for marking reports as resolved.
+
+Resolution quality and citizen confirmation should contribute to performance.
+
+### C. Authority Leaderboard and Recognition
+
+Implement:
+- Top Performing Officers.
+- Department Performance Rankings.
+- Monthly Recognition.
+- Resolution Excellence Awards.
+- Fast Response Recognition.
+- Citizen Appreciation Score.
+
+Provide digital recognition badges.
+
+Examples:
+- Civic Champion.
+- Quick Responder.
+- Resolution Expert.
+- Public Service Excellence.
+- Citizen Trust Builder.
+
+### D. Department Accountability
+
+Display department-wise performance.
+
+If a department has unresolved or overdue issues, highlight them.
+
+Provide escalation options:
+- First-level escalation.
+- Department supervisor.
+- Senior authority.
+- Escalation history.
+
+Set configurable response and resolution deadlines according to issue priority.
+
+Use transparent performance metrics rather than arbitrary rankings.
+
+---
+
+## 3. COMPLETE CITIZEN-AUTHORITY NOTIFICATION SYNCHRONIZATION
+
+Every relevant notification generated in the Citizen Dashboard must automatically reach the Authority Dashboard.
+
+Implement a centralized notification system.
+
+Notifications must cover:
+
+**Citizen-submitted notifications:**
+- New civic report.
+- New medical assistance request.
+- Road accident assistance request.
+- SOS emergency alert.
+- New evidence submitted.
+- Complaint against authority.
+- Reopened issue.
+- Additional information submitted.
+
+**Authority-generated notifications:**
+- Report verified.
+- Report rejected.
+- Officer assigned.
+- Issue accepted.
+- Work started.
+- Evidence uploaded.
+- Issue resolved.
+- Issue reopened.
+- Complaint received and reviewed.
+- Escalation initiated.
+
+Implement:
+- Real-time notification updates.
+- Notification counters.
+- Read/unread status.
+- Notification timestamps.
+- Notification categories.
+- Notification history.
+- Click-to-open relevant report.
+- Priority-based alerts.
+
+Use WebSockets, Server-Sent Events, or reliable real-time database subscriptions.
+
+Do not rely exclusively on frontend state or simulated notifications.
+
+Persist notifications in the database.
+
+---
+
+## 4. SEPARATE SOS, MEDICAL ASSISTANCE AND ROAD ACCIDENT HELP
+
+IMPORTANT: These must be separate features.
+
+Do not combine Medical Assistance or Road Accident Help inside Seva Shield or the SOS feature.
+
+The Citizen Dashboard must show three distinct emergency-related options:
+
+1. SOS Emergency.
+2. Medical Assistance.
+3. Road Accident Help.
+
+Each must have its own interface, workflow, backend logic, and notifications.
+
+### A. SOS Emergency
+
+Preserve the existing SOS functionality.
+
+Implement:
+- Emergency activation.
+- Current location capture.
+- Emergency alert generation.
+- Caregiver notification.
+- Authority emergency notification where applicable.
+- Timestamp.
+- Emergency status.
+- Emergency history.
+
+SOS must remain a separate general emergency feature.
+
+Do not put Road Accident Help inside SOS.
+
+### B. Medical Assistance
+
+Create a dedicated Medical Assistance section.
+
+When citizens open it, show:
+
+**Emergency Contact Options:**
+- Call 112 — National Emergency Response Support.
+- Call 108 — Ambulance service, subject to local availability.
+
+Use actual telephone links:
+- tel:112
+- tel:108
+
+Display clear call buttons and explain that the citizen's phone will initiate the call.
+
+Also provide:
+- Request Medical Assistance.
+- Share Current Location.
+- Notify Caregiver.
+- Notify Emergency Contacts.
+- Find Nearby Hospitals.
+- Find Nearby Police Stations.
+- Emergency Request History.
+
+Medical Assistance must generate a proper notification in the Authority Dashboard.
+
+### C. Live Location and Nearby Emergency Services
+
+Implement reliable live location sensing using browser geolocation with user permission.
+
+Display:
+- Current latitude.
+- Current longitude.
+- Location accuracy.
+- Last updated time.
+- Location availability.
+
+Add a configurable search radius:
+
+- 1 km.
+- 2 km.
+- 5 km.
+- 10 km.
+- 15 km.
+
+Find ONLY:
+- Nearby Hospitals.
+- Nearby Police Stations.
+
+Do not display unrelated shops, restaurants, or other businesses.
+
+Nearby results must be calculated using the citizen's actual current location.
+
+Each result should display:
+- Name.
+- Distance.
+- Address.
+- Available contact number, if verified.
+- Directions.
+- Call option where available.
+
+If location access is denied, provide a manual location search option.
+
+Never display fake nearby places or hardcoded coordinates.
+
+### D. Caregiver Notifications and SMS
+
+When a citizen requests medical assistance or reports an accident:
+
+Automatically notify the registered caregiver.
+
+The SMS should contain:
+- Citizen name.
+- Emergency type.
+- Emergency timestamp.
+- Current location or map link, if permission is granted.
+- Emergency contact details.
+- Assistance status.
+
+Use the existing SMS integration if available.
+
+Implement a reliable backend SMS service through a supported provider such as Twilio or an appropriate Indian SMS provider.
+
+Requirements:
+- Verify caregiver phone number.
+- Use server-side API credentials.
+- Do not expose API keys in frontend code.
+- Maintain SMS delivery logs.
+- Show success, pending, or failed delivery status.
+- Implement retry handling for temporary failures.
+- Avoid sending duplicate SMS messages.
+
+If SMS configuration is missing, clearly show that SMS delivery is not configured. Do not falsely display SMS sent.
+
+---
+
+## 5. ROAD ACCIDENT HELP — SEPARATE FUNCTIONAL MODULE
+
+Create an independent Road Accident Help option in the Citizen Dashboard.
+
+Do not place it inside SOS or Seva Shield.
+
+Provide:
+- Report Road Accident.
+- Accident Location.
+- Accident Description.
+- Accident Severity.
+- Number of People Affected, if known.
+- Upload Accident Photos.
+- Notify Caregiver.
+- Request Assistance.
+- Find Nearby Hospitals.
+- Find Nearby Police Stations.
+- Call 112.
+- Call 108.
+
+Capture live location with permission.
+
+When a road accident request is submitted:
+1. Create an accident assistance record.
+2. Notify the caregiver.
+3. Generate the required SMS.
+4. Notify the relevant authority dashboard.
+5. Display the emergency request status.
+6. Maintain an activity history.
+
+Make sure that medical assistance and road accident assistance are separately identifiable in the Authority Dashboard.
+
+---
+
+## 6. ELEVENLABS VOICE ASSISTANT — SEVA SAATHI
+
+Implement a fully functional ElevenLabs-powered voice assistant named:
+
+**SEVA SAATHI — Your AI Civic Companion**
+
+This feature must work, not merely display a microphone icon.
+
+The user should be able to speak naturally and interact with the assistant.
+
+### A. Real Voice Interaction
+
+Implement:
+- Start Listening.
+- Stop Listening.
+- Speech recognition.
+- Voice transcription.
+- AI response generation.
+- ElevenLabs text-to-speech.
+- Voice playback.
+- Conversation history.
+- Language selection.
+- Error handling.
+
+The user must be able to speak and hear responses.
+
+Use ElevenLabs for voice generation and the appropriate supported speech-to-text or transcription service for voice recognition.
+
+Do not assume that ElevenLabs text-to-speech alone provides speech recognition.
+
+The assistant must:
+- Detect the user's spoken language where supported.
+- Understand the user's request.
+- Generate relevant responses.
+- Speak responses in the selected language.
+- Avoid responding with unrelated or incorrect information.
+
+Support the existing Seva AI language options wherever the configured speech services support them.
+
+### B. Seva Saathi Capabilities
+
+Seva Saathi should help citizens:
+- Report civic issues.
+- Find nearby emergency services.
+- Request medical assistance.
+- Report road accidents.
+- Check report status.
+- Find follow-up reference numbers.
+- Understand authority updates.
+- Submit complaints.
+- Understand how to use Seva AI.
+
+Integrate the assistant with actual backend functions.
+
+It must not invent report statuses, reference numbers, or emergency confirmations.
+
+---
+
+## 7. VOICE-BASED CIVIC ISSUE REPORTING
+
+In the Citizen Dashboard, under Report Issue, add a prominent option:
+
+**Report an Issue Using Voice**
+
+The citizen should be able to report a complete issue without typing everything manually.
+
+Implement this workflow:
+
+**Step 1: Speak Incident Title**
+
+Ask the citizen to describe the issue.
+
+Example: "Garbage overflowing near the main market."
+
+Convert speech into text and populate the Incident Title field.
+
+**Step 2: Speak Detailed Description**
+
+Allow the citizen to explain the complete incident.
+
+Convert speech into text and populate the Detailed Description field.
+
+**Step 3: Capture Location**
+
+Ask permission to capture the current location.
+
+Allow manual location editing.
+
+**Step 4: Speak Additional Details**
+
+Allow the citizen to mention:
+- Issue category.
+- Severity.
+- Nearby landmark.
+- Additional observations.
+
+**Step 5: Submit Report**
+
+Read back the generated report to the citizen.
+
+Allow them to edit or confirm it.
+
+Submit the report through the existing report submission backend.
+
+Generate a unique report ID and follow-up reference number.
+
+### Voice Follow-Up Reference Feature
+
+Add a voice option to the existing follow-up reference section.
+
+Citizens should be able to:
+- Speak their reference number.
+- Have it transcribed.
+- Confirm the detected reference number.
+- Retrieve their actual report status.
+
+Never generate fake tracking information.
+
+Provide a manual text input as a fallback.
+
+---
+
+## 8. CITIZEN COMPLAINT BOX — COMPLAINT AGAINST AUTHORITY
+
+Add a dedicated section in the Citizen Dashboard:
+
+**Complaint Box — Raise Your Concern**
+
+Citizens must be able to file complaints regarding authority officers, departments, delayed actions, inappropriate behavior, or unresolved civic issues.
+
+Provide fields:
+- Complaint Subject.
+- Related Report ID, if applicable.
+- Authority Officer or Department.
+- Complaint Category.
+- Detailed Description.
+- Supporting Evidence Upload.
+- Submission Date.
+- Anonymous or Identified Complaint, where legally and technically supported.
+
+Generate a unique complaint reference number.
+
+### Complaint Management Workflow
+
+When a citizen submits a complaint:
+
+1. Save it in the database.
+2. Generate a unique complaint ID.
+3. Notify the appropriate authorized supervisor.
+4. Display the complaint in the Authority Dashboard.
+5. Assign the complaint to an appropriate reviewing officer.
+6. Allow review and investigation.
+7. Allow internal notes and action updates.
+8. Notify the citizen of progress.
+9. Record final resolution and closure notes.
+
+IMPORTANT:
+A complaint against an officer must not be assigned directly to the same officer for review.
+
+Implement role-based access so that only authorized supervisors or independent reviewing officers can access sensitive complaint details.
+
+Maintain complaint confidentiality and an audit trail.
+
+---
+
+## 9. AUTHORITY DASHBOARD — ADDITIONAL FUNCTIONAL MODULES
+
+Create separate dashboard sections for:
+
+1. Overview.
+2. All Civic Reports.
+3. AI Verification.
+4. Emergency Alerts.
+5. Medical Assistance.
+6. Road Accident Assistance.
+7. Officer Assignment.
+8. Work Progress.
+9. Resolution Evidence.
+10. Citizen Complaints.
+11. Department Performance.
+12. Authority Leaderboard.
+13. Escalations.
+14. Notifications.
+15. Analytics.
+16. Activity Logs.
+
+Every section must have functional navigation, database connectivity, and meaningful actions.
+
+### Emergency Alert Management
+
+Show SOS, Medical Assistance, and Road Accident alerts as separate categories.
+
+Each alert should display:
+- Citizen information.
+- Emergency type.
+- Current location.
+- Timestamp.
+- Caregiver notification status.
+- SMS delivery status.
+- Alert status.
+- Assigned responder, if applicable.
+
+Implement:
+- Acknowledge Alert.
+- Assign Responder.
+- Update Status.
+- Mark Assistance Completed.
+- Add Response Notes.
+
+Emergency alerts must have a higher notification priority than ordinary civic reports.
+
+---
+
+## 10. BACKEND, DATABASE AND API INTEGRATION
+
+Inspect the existing backend before implementing changes.
+
+Identify and repair disconnected APIs, broken database queries, incorrect authentication, missing database relationships, and nonfunctional frontend actions.
+
+Use the existing technology stack wherever possible.
+
+Create or repair proper database models and relationships for:
+
+- Users.
+- Citizens.
+- Authority Officers.
+- Departments.
+- Civic Reports.
+- Report Evidence.
+- Verification Records.
+- Assignments.
+- Resolution Records.
+- Emergency Requests.
+- SOS Alerts.
+- Medical Assistance Requests.
+- Road Accident Requests.
+- Caregiver Contacts.
+- SMS Logs.
+- Notifications.
+- Citizen Complaints.
+- Complaint Investigations.
+- Authority Performance.
+- Audit Logs.
+
+Every record must have appropriate unique IDs, timestamps, ownership, and status fields.
+
+Implement secure APIs for:
+- Report submission.
+- Report retrieval.
+- Verification.
+- Assignment.
+- Reassignment.
+- Status updates.
+- Evidence uploads.
+- Resolution approval.
+- Emergency alerts.
+- Medical requests.
+- Accident requests.
+- Caregiver notifications.
+- SMS delivery.
+- Complaint submission.
+- Complaint investigation.
+- Authority performance.
+- Notification retrieval.
+
+Ensure that both dashboards use the same backend records.
+
+Do not store important data only in browser localStorage or frontend variables.
+
+Use persistent database storage and secure file storage.
+
+---
+
+## 11. ROLE-BASED AUTHENTICATION AND SECURITY
+
+Implement proper role-based authentication.
+
+Roles:
+- Citizen.
+- Authority Officer.
+- Department Supervisor.
+- Administrator.
+
+Citizens must not be able to access authority-only pages.
+
+Authority officers must only access records permitted by their department and assigned responsibilities.
+
+Supervisors must have appropriate oversight permissions.
+
+Protect:
+- Personal information.
+- Phone numbers.
+- Emergency details.
+- Caregiver details.
+- Location information.
+- Complaint records.
+- API credentials.
+
+Validate all incoming data on the backend.
+
+Add proper authorization checks to every protected API.
+
+Never rely only on hiding frontend buttons to enforce permissions.
+
+---
+
+## 12. UI/UX REQUIREMENTS
+
+Preserve the existing Seva AI visual identity.
+
+The design should be:
+- Modern.
+- Elegant.
+- Premium.
+- Clean.
+- Professional.
+- User-friendly.
+- Responsive.
+- Accessible.
+
+Use a clear distinction between the Citizen Dashboard and Authority Dashboard.
+
+Citizen Dashboard:
+Simple navigation, large buttons, accessible text, clear voice assistance, easy reporting, and emergency options.
+
+Authority Dashboard:
+Professional administrative interface, clear issue tables, status indicators, evidence previews, assignment controls, notifications, analytics, and performance monitoring.
+
+Avoid unnecessary animations, excessive gradients, cluttered cards, and duplicate sections.
+
+Make all features easy to understand.
+
+---
+
+## 13. REAL FUNCTIONALITY — STRICT IMPLEMENTATION RULES
+
+This is not a UI-only assignment.
+
+Follow these rules:
+
+1. Inspect the complete existing project before editing.
+2. Identify all existing bugs and disconnected features.
+3. Repair existing implementations wherever possible.
+4. Do not remove any existing working feature.
+5. Connect Citizen and Authority dashboards to the same persistent backend.
+6. Every form must validate and submit real data.
+7. Every button must perform its intended action.
+8. Every upload must save actual files.
+9. Every notification must originate from a real event.
+10. Every status change must persist in the database.
+11. Every assignment must update the relevant officer's workload.
+12. Every resolution must include actual evidence.
+13. Every emergency request must follow its own workflow.
+14. Every SMS must be sent through a configured provider before showing successful delivery.
+15. ElevenLabs voice must actually listen, process, and speak.
+16. Voice-generated reports must submit through the same backend as manually generated reports.
+17. Every complaint must appear in the authorized complaint management interface.
+18. Every authority action must be recorded in the audit log.
+19. Do not use hardcoded fake reports, fake GPS locations, fake officers, fake notifications, or fake success messages in production functionality.
+20. If an external API requires credentials, integrate it securely and clearly identify the missing configuration rather than pretending it works.
+
+---
+
+## 14. COMPLETE END-TO-END TESTING
+
+After implementing the changes, test the entire application.
+
+### Test 1: Citizen Civic Report
+- Citizen submits a report.
+- Report appears in Authority Dashboard.
+- AI verification runs.
+- Officer verifies report.
+- Officer assigns it.
+- Citizen receives notification.
+- Officer updates progress.
+- Officer uploads before-and-after evidence.
+- Authority approves resolution.
+- Citizen sees the completed report.
+
+### Test 2: Fraud Detection
+- Submit a normal report.
+- Submit a duplicate report.
+- Submit a suspicious report.
+- Verify AI risk indicators.
+- Test manual review.
+- Test rejection and citizen notification.
+
+### Test 3: Authority Assignment
+- Assign a report to an officer.
+- Reassign to another officer.
+- Verify workload changes.
+- Verify assignment history.
+- Verify notifications.
+
+### Test 4: SOS Emergency
+- Trigger SOS.
+- Capture permitted location.
+- Verify caregiver notification.
+- Verify authority alert.
+- Verify emergency history.
+
+### Test 5: Medical Assistance
+- Open Medical Assistance.
+- Test 112 and 108 call links.
+- Enable live location.
+- Select radius.
+- Find nearby hospitals and police stations.
+- Trigger caregiver notification.
+- Verify SMS delivery logs.
+- Verify Authority Dashboard alert.
+
+### Test 6: Road Accident Help
+- Submit accident assistance request.
+- Capture location.
+- Notify caregiver.
+- Send SMS.
+- Generate authority alert.
+- Verify independent accident workflow.
+
+### Test 7: ElevenLabs Seva Saathi
+- Start voice assistant.
+- Speak a question.
+- Verify transcription.
+- Verify AI response.
+- Verify ElevenLabs voice playback.
+- Test language selection.
+- Test microphone permission failure.
+- Test network/API errors.
+
+### Test 8: Voice-Based Issue Reporting
+- Speak incident title.
+- Speak description.
+- Capture location.
+- Review generated text.
+- Submit report.
+- Verify report appears in Authority Dashboard.
+- Speak follow-up reference.
+- Retrieve actual report status.
+
+### Test 9: Citizen Complaint
+- Submit a complaint.
+- Verify complaint ID.
+- Verify authority supervisor notification.
+- Open complaint in Authority Dashboard.
+- Assign independent reviewer.
+- Update investigation.
+- Verify citizen receives updates.
+
+### Test 10: Authority Performance
+- Resolve multiple test reports.
+- Verify performance metrics.
+- Verify leaderboard.
+- Verify resolution evidence requirements.
+- Verify reopened reports affect performance appropriately.
+
+---
+
+## 15. FINAL DELIVERY REQUIREMENTS
+
+After completing the implementation, provide:
+
+1. A list of all repaired features.
+2. A list of newly implemented features.
+3. Backend and database changes.
+4. APIs integrated.
+5. ElevenLabs integration status.
+6. SMS integration status.
+7. Live location implementation status.
+8. Citizen-Authority notification synchronization status.
+9. Test results for every workflow.
+10. Remaining environment variables or API credentials required.
+11. Any features that cannot yet work because of missing external services.
+
+**FINAL PRIORITY:**
+
+The Authority Dashboard must work perfectly as the central operational system of Seva AI.
+
+Every civic issue raised by citizens must reach the authority.
+
+Every report must be verifiable, assignable, trackable, and resolvable with photographic evidence.
+
+Every emergency notification must reach the correct dashboard.
+
+Medical Assistance and Road Accident Help must be separate from SOS.
+
+Caregiver SMS notifications must work through a real SMS provider.
+
+ElevenLabs-powered Seva Saathi must support genuine voice interaction.
+
+Citizens must be able to report issues through voice and submit complaints against authority officers.
+
+Authority performance, accountability, recognition, and leaderboard features must be connected to actual database activity.
+
+**DO NOT STOP AFTER GENERATING THE UI. IMPLEMENT, CONNECT, DEBUG, AND TEST THE COMPLETE WORKFLOW.**
+
+The final result must be a working, integrated, judge-ready Seva AI platform, not a static prototype.

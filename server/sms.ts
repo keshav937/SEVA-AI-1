@@ -42,14 +42,37 @@ export function isSmsGatewayConfigured(): { configured: boolean; provider: strin
   return { configured: false, provider: 'none' };
 }
 
-async function sendViaTwilio(to: string, body: string): Promise<{ ok: boolean; sid?: string; error?: string; transient?: boolean }> {
+export function verifyTwilioWebhookSignature(params: {
+  signatureHeader?: string;
+  fullUrl: string;
+  bodyParams: Record<string, string>;
+}): boolean {
+  const authToken = process.env.TWILIO_AUTH_TOKEN?.trim();
+  if (!authToken || !params.signatureHeader) return false;
+  const sortedKeys = Object.keys(params.bodyParams || {}).sort();
+  let data = params.fullUrl;
+  for (const k of sortedKeys) {
+    data += k + String(params.bodyParams[k] ?? '');
+  }
+  const expected = crypto.createHmac('sha1', authToken).update(data, 'utf8').digest('base64');
+  const sigBuf = Buffer.from(params.signatureHeader.trim());
+  const expBuf = Buffer.from(expected);
+  if (sigBuf.length !== expBuf.length) return false;
+  return crypto.timingSafeEqual(sigBuf, expBuf);
+}
+
+async function sendViaTwilio(to: string, body: string): Promise<{ ok: boolean; sid?: string; status?: string; error?: string; transient?: boolean }> {
   const sid = process.env.TWILIO_ACCOUNT_SID!.trim();
   const token = process.env.TWILIO_AUTH_TOKEN!.trim();
   const from = process.env.TWILIO_FROM_NUMBER!.trim();
+  const appUrl = process.env.APP_URL?.trim().replace(/\/+$/, '');
 
   const endpoint = `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(sid)}/Messages.json`;
   const auth = Buffer.from(`${sid}:${token}`).toString('base64');
   const form = new URLSearchParams({ To: to, From: from, Body: body });
+  if (appUrl && /^https?:\/\//i.test(appUrl) && !appUrl.includes('MY_APP_URL')) {
+    form.set('StatusCallback', `${appUrl}/api/sms/twilio-webhook`);
+  }
 
   try {
     const res = await fetch(endpoint, {
@@ -61,13 +84,16 @@ async function sendViaTwilio(to: string, body: string): Promise<{ ok: boolean; s
       body: form.toString(),
       signal: AbortSignal.timeout(8000),
     });
-    const data = (await res.json().catch(() => ({}))) as { sid?: string; message?: string };
+    const data = (await res.json().catch(() => ({}))) as { sid?: string; status?: string; code?: number; message?: string };
     if (res.ok) {
-      return { ok: true, sid: data.sid };
+      return { ok: true, sid: data.sid, status: data.status };
     }
+    const isTrialBlocked = data.code === 21608 || /unverified/i.test(data.message || '');
     return {
       ok: false,
-      error: data.message || `Twilio returned HTTP ${res.status}`,
+      error: isTrialBlocked
+        ? `Twilio trial restriction (code ${data.code || 21608}): verify recipient number ${to} in Twilio Console or upgrade Twilio account.`
+        : data.message || `Twilio returned HTTP ${res.status}`,
       transient: res.status >= 500 || res.status === 429,
     };
   } catch (err: any) {

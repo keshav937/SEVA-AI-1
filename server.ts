@@ -24,7 +24,7 @@ import {
   VOICE_LANGUAGE_CAPABILITIES,
 } from './server/elevenlabs.ts';
 import { fetchNearbyPlaces, geocodeLocationQuery, NearbyCategoryKey, reverseGeocode } from './server/places.ts';
-import { CaregiverRecipient, dispatchCaregiverSmsAlerts, isSmsGatewayConfigured } from './server/sms.ts';
+import { CaregiverRecipient, dispatchCaregiverSmsAlerts, isSmsGatewayConfigured, verifyTwilioWebhookSignature } from './server/sms.ts';
 import {
   AccidentRequestRecord,
   addAuditLog,
@@ -67,6 +67,7 @@ import {
   updateOfficerAvailability,
   updateOperationalReport,
   updateOperationalSos,
+  updateSmsLogByProviderId,
   UploadedFileRef,
   upsertAccidentRequest,
   upsertMedicalRequest,
@@ -190,6 +191,20 @@ async function startServer() {
 
   app.set('trust proxy', 1);
   app.use(express.json({ limit: '6mb' }));
+  app.use(express.urlencoded({ extended: false }));
+
+  // Role isolation guard: block authenticated Authority tokens from invoking citizen-only routes
+  function rejectIfAuthorityToken(req: express.Request, res: express.Response): boolean {
+    const token = getBearerToken(req);
+    if (token && getAuthoritySession(token)) {
+      res.status(403).json({
+        error: 'Dashboard Isolation Enforced: Authority accounts cannot access citizen-only routes or submit citizen actions.',
+        code: 'ROLE_ISOLATION_FORBIDDEN',
+      });
+      return true;
+    }
+    return false;
+  }
 
   app.use((req, res, next) => {
     if (!req.path.startsWith('/api/')) {
@@ -831,6 +846,7 @@ async function startServer() {
   // 6. CIVIC REPORTS LIFECYCLE (SYNC, LOOKUP, VERIFY, ASSIGN, EVIDENCE, DISPUTE, ESCALATE)
   // =========================================================================
   app.post('/api/reports/sync', (req, res) => {
+    if (rejectIfAuthorityToken(req, res)) return;
     const body = req.body as OperationalReportRecord;
     if (!body?.id || !body?.complaintId || !body?.reporterUid || !body?.title) {
       return res.status(400).json({ error: 'Invalid report payload.' });
@@ -885,6 +901,7 @@ async function startServer() {
   });
 
   app.get('/api/citizen/reports/:uid', (req, res) => {
+    if (rejectIfAuthorityToken(req, res)) return;
     const reports = getOperationalReports({ fraudQueue: 'all', includeSensitive: true }).filter(
       (r) => r.reporterUid === req.params.uid
     );
@@ -892,6 +909,7 @@ async function startServer() {
   });
 
   app.post('/api/citizen/reports/:id/follow-up', (req, res) => {
+    if (rejectIfAuthorityToken(req, res)) return;
     const { uid, note, evidenceFiles } = req.body as {
       uid?: string;
       note?: string;
@@ -953,6 +971,7 @@ async function startServer() {
   });
 
   app.post('/api/citizen/reports/:id/resolution-response', (req, res) => {
+    if (rejectIfAuthorityToken(req, res)) return;
     const { uid, action, rating, comment, disputeReason } = req.body as {
       uid?: string;
       action?: 'confirm' | 'reopen';
@@ -1307,6 +1326,15 @@ async function startServer() {
     const finalOfficerName = matchedOfficer?.name || officerName?.trim() || session.name;
     const finalOfficerUid = matchedOfficer?.uid || officerUid || (finalOfficerName === session.name ? session.uid : undefined);
     const finalDept = department?.trim() || matchedOfficer?.department || target.department;
+    if (
+      target.assignedOfficer &&
+      target.assignedOfficer.toLowerCase() === finalOfficerName.toLowerCase() &&
+      target.department === finalDept
+    ) {
+      return res.status(409).json({
+        error: `Duplicate Assignment Blocked: Report ${target.complaintId} is already assigned to ${finalOfficerName} (${finalDept}).`,
+      });
+    }
     const isReassignment = Boolean(target.assignedOfficer && target.assignedOfficer !== finalOfficerName);
 
     if (isReassignment && (!reason || reason.trim().length < 3)) {
@@ -1728,6 +1756,7 @@ async function startServer() {
   // 8. SEPARATE SOS, MEDICAL ASSISTANCE, ROAD ACCIDENT HELP & SMS GATEWAY
   // =========================================================================
   app.post('/api/sos/sync', async (req, res) => {
+    if (rejectIfAuthorityToken(req, res)) return;
     const sos = req.body;
     if (!sos?.id || !sos?.uid) {
       return res.status(400).json({ error: 'Invalid SOS payload.' });
@@ -1802,6 +1831,7 @@ async function startServer() {
   });
 
   app.post('/api/medical/create', async (req, res) => {
+    if (rejectIfAuthorityToken(req, res)) return;
     const {
       uid,
       citizenName,
@@ -1908,10 +1938,12 @@ async function startServer() {
   });
 
   app.get('/api/citizen/medical/:uid', (req, res) => {
+    if (rejectIfAuthorityToken(req, res)) return;
     return res.json({ requests: getMedicalRequests(req.params.uid) });
   });
 
   app.post('/api/accident/create', async (req, res) => {
+    if (rejectIfAuthorityToken(req, res)) return;
     const {
       uid,
       citizenName,
@@ -2024,6 +2056,7 @@ async function startServer() {
   });
 
   app.get('/api/citizen/accident/:uid', (req, res) => {
+    if (rejectIfAuthorityToken(req, res)) return;
     return res.json({ requests: getAccidentRequests(req.params.uid) });
   });
 
@@ -2156,10 +2189,66 @@ async function startServer() {
     return res.status(400).json({ error: 'Unknown emergency category.' });
   });
 
+  // Twilio / SMS Gateway Delivery Status Webhook (authenticated via X-Twilio-Signature HMAC or X-SMS-Webhook-Token)
+  app.post('/api/sms/twilio-webhook', (req, res) => {
+    const twilioSig = req.header('X-Twilio-Signature');
+    const customToken = req.header('X-SMS-Webhook-Token') || getBearerToken(req);
+    const configuredWebhookToken = process.env.SMS_WEBHOOK_TOKEN?.trim();
+
+    let authenticated = false;
+    if (twilioSig && process.env.TWILIO_AUTH_TOKEN?.trim()) {
+      const proto = req.protocol;
+      const host = req.get('host') || '';
+      const fullUrl = `${proto}://${host}${req.originalUrl}`;
+      authenticated = verifyTwilioWebhookSignature({
+        signatureHeader: twilioSig,
+        fullUrl,
+        bodyParams: (req.body || {}) as Record<string, string>,
+      });
+    } else if (configuredWebhookToken && customToken && customToken === configuredWebhookToken) {
+      authenticated = true;
+    }
+
+    if (!authenticated) {
+      return res.status(403).json({ error: 'Webhook authentication failed (invalid Twilio signature or token).' });
+    }
+
+    const messageSid = String(req.body?.MessageSid || req.body?.SmsSid || req.body?.messageId || '').trim();
+    const rawStatus = String(req.body?.MessageStatus || req.body?.SmsStatus || req.body?.status || '').toLowerCase();
+    const errorCode = req.body?.ErrorCode ? `Twilio Error ${req.body.ErrorCode}` : undefined;
+
+    if (!messageSid || !rawStatus) {
+      return res.status(400).json({ error: 'MessageSid and MessageStatus are required.' });
+    }
+
+    const mappedStatus: 'sent' | 'pending' | 'failed' =
+      rawStatus === 'delivered' || rawStatus === 'sent'
+        ? 'sent'
+        : rawStatus === 'failed' || rawStatus === 'undelivered' || rawStatus === 'canceled'
+        ? 'failed'
+        : 'pending';
+
+    const updatedLog = updateSmsLogByProviderId(messageSid, mappedStatus, errorCode);
+    if (updatedLog) {
+      addAuditLog({
+        actorUid: 'twilio_webhook',
+        actorRole: 'system',
+        department: 'Emergency Control Room',
+        action: `sms_webhook:${mappedStatus}`,
+        targetId: updatedLog.emergencyId,
+        detail: `Provider SID ${messageSid} updated to ${rawStatus}${errorCode ? ` (${errorCode})` : ''}.`,
+      });
+      broadcast('authority:all', 'sms:updated', updatedLog);
+    }
+
+    return res.status(200).json({ received: true, status: mappedStatus, matched: Boolean(updatedLog) });
+  });
+
   // =========================================================================
   // 9. CITIZEN COMPLAINT BOX (COMPLAINTS AGAINST AUTHORITY + ANTI-SELF-REVIEW)
   // =========================================================================
   app.post('/api/complaints', (req, res) => {
+    if (rejectIfAuthorityToken(req, res)) return;
     const {
       citizenUid,
       citizenName,
@@ -2261,6 +2350,7 @@ async function startServer() {
   });
 
   app.get('/api/citizen/complaints/:uid', (req, res) => {
+    if (rejectIfAuthorityToken(req, res)) return;
     // Confidentiality: strip internal investigation notes for citizen view
     const list = getCitizenComplaintsByUid(req.params.uid).map((c) => ({
       ...c,

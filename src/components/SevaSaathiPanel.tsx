@@ -385,6 +385,7 @@ export const SevaSaathiPanel: React.FC<SevaSaathiPanelProps> = ({
               lng: lng ?? undefined,
               myReportsSummary: myReports.slice(0, 8).map((r) => ({
                 complaintId: r.complaintId,
+                referenceNumber: r.referenceNumber,
                 title: r.title,
                 category: r.category,
                 status: r.status,
@@ -783,7 +784,7 @@ export const SevaSaathiPanel: React.FC<SevaSaathiPanelProps> = ({
                       Listen
                     </button>
 
-                    {turn.draftReport && (
+                    {!authoritySession && turn.draftReport && (
                       <button
                         type="button"
                         onClick={() => {
@@ -802,7 +803,7 @@ export const SevaSaathiPanel: React.FC<SevaSaathiPanelProps> = ({
                       </button>
                     )}
 
-                    {turn.navTarget && !turn.draftReport && (
+                    {!authoritySession && turn.navTarget && !turn.draftReport && (
                       <button
                         type="button"
                         onClick={() => {
@@ -815,7 +816,7 @@ export const SevaSaathiPanel: React.FC<SevaSaathiPanelProps> = ({
                       </button>
                     )}
 
-                    {turn.shouldTriggerSos && (
+                    {!authoritySession && turn.shouldTriggerSos && (
                       <button
                         type="button"
                         onClick={() => {

@@ -310,6 +310,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     passcode: string;
     officerEmail?: string;
     officerName?: string;
+    designation?: string;
+    roleChoice?: AuthorityRole;
+    phone?: string;
   }) => {
     const emailToUse = firebaseUser?.email || params.officerEmail?.trim();
     const nameToUse = profile?.fullName || firebaseUser?.displayName || params.officerName?.trim() || 'Authority Officer';
@@ -326,6 +329,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         name: nameToUse,
         department: params.department,
         jurisdiction: params.jurisdiction,
+        designation: params.designation?.trim() || undefined,
+        roleChoice: params.roleChoice || 'authority',
+        phone: params.phone?.trim() || undefined,
         passcode: params.passcode,
         googleSignedIn: Boolean(firebaseUser),
       }),
@@ -338,9 +344,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const session: AuthoritySessionInfo = {
       token: data.token,
+      uid: data.uid,
+      name: data.name,
       role: data.role,
       department: data.department,
       jurisdiction: data.jurisdiction,
+      designation: data.designation,
       expiresAt: data.expiresAt,
     };
     setAuthoritySession(session);

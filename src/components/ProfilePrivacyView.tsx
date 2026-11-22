@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Bell, CheckCircle2, Lock, LogOut, ShieldCheck } from 'lucide-react';
 import {
   collection,
@@ -12,7 +12,7 @@ import {
 } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
 import { OperationType, buildFirestoreErrorInfo, db } from '../lib/firebase';
-import { UserNotification } from '../types/seva';
+import { PlatformNotification, UserNotification } from '../types/seva';
 import { LiveTrackingPanel } from './LiveTrackingPanel';
 
 export const ProfilePrivacyView: React.FC = () => {
@@ -26,7 +26,8 @@ export const ProfilePrivacyView: React.FC = () => {
   const [dpdpConsent, setDpdpConsent] = useState(true);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [notifications, setNotifications] = useState<UserNotification[]>([]);
+  const [fsNotifications, setFsNotifications] = useState<UserNotification[]>([]);
+  const [serverNotifications, setServerNotifications] = useState<PlatformNotification[]>([]);
 
   useEffect(() => {
     if (!profile) return;
@@ -38,22 +39,68 @@ export const ProfilePrivacyView: React.FC = () => {
     setDpdpConsent(profile.dpdpConsent ?? true);
   }, [profile]);
 
+  const loadServerNotifications = useCallback(async () => {
+    if (!firebaseUser) {
+      setServerNotifications([]);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/notifications?uid=${encodeURIComponent(firebaseUser.uid)}`);
+      const data = await res.json();
+      if (res.ok && Array.isArray(data.notifications)) {
+        setServerNotifications(data.notifications);
+      }
+    } catch {
+      // ignore transient network errors
+    }
+  }, [firebaseUser]);
+
+  useEffect(() => {
+    loadServerNotifications();
+  }, [loadServerNotifications]);
+
   useEffect(() => {
     if (!firebaseUser) {
-      setNotifications([]);
+      setFsNotifications([]);
       return;
     }
     const q = query(collection(db, 'notifications'), where('uid', '==', firebaseUser.uid));
     return onSnapshot(
       q,
       (snap) => {
-        setNotifications(snap.docs.map((d) => ({ id: d.id, ...d.data() } as UserNotification)));
+        setFsNotifications(snap.docs.map((d) => ({ id: d.id, ...d.data() } as UserNotification)));
       },
       (err) => {
         buildFirestoreErrorInfo(err, OperationType.LIST, 'notifications');
       }
     );
   }, [firebaseUser]);
+
+  const mergedNotifications = useMemo(() => {
+    const byId = new Map<string, UserNotification>();
+    for (const s of serverNotifications) {
+      byId.set(s.id, {
+        id: s.id,
+        uid: s.targetUid || firebaseUser?.uid || '',
+        type: s.type,
+        priority: s.priority,
+        title: s.title,
+        message: s.message,
+        relatedId: s.relatedId,
+        relatedType: s.relatedType,
+        read: s.read,
+        createdAt: s.createdAt,
+      });
+    }
+    for (const f of fsNotifications) {
+      if (!byId.has(f.id)) byId.set(f.id, f);
+    }
+    return Array.from(byId.values()).sort((a, b) => {
+      const tA = typeof a.createdAt === 'string' ? new Date(a.createdAt).getTime() : 0;
+      const tB = typeof b.createdAt === 'string' ? new Date(b.createdAt).getTime() : 0;
+      return tB - tA;
+    });
+  }, [firebaseUser?.uid, fsNotifications, serverNotifications]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -77,10 +124,29 @@ export const ProfilePrivacyView: React.FC = () => {
   };
 
   const markRead = async (id: string) => {
-    try {
-      await updateDoc(doc(db, 'notifications', id), { read: true });
-    } catch (err) {
-      buildFirestoreErrorInfo(err, OperationType.UPDATE, `notifications/${id}`);
+    const isServer = serverNotifications.some((s) => s.id === id);
+    if (isServer) {
+      await fetch(`/api/notifications/${encodeURIComponent(id)}/read`, { method: 'POST' }).catch(() => {});
+      setServerNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
+    } else {
+      try {
+        await updateDoc(doc(db, 'notifications', id), { read: true });
+      } catch (err) {
+        buildFirestoreErrorInfo(err, OperationType.UPDATE, `notifications/${id}`);
+      }
+    }
+  };
+
+  const markAllRead = async () => {
+    if (!firebaseUser) return;
+    await fetch('/api/notifications/read-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uid: firebaseUser.uid }),
+    }).catch(() => {});
+    setServerNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    for (const f of fsNotifications.filter((x) => !x.read)) {
+      updateDoc(doc(db, 'notifications', f.id), { read: true }).catch(() => {});
     }
   };
 
@@ -105,6 +171,8 @@ export const ProfilePrivacyView: React.FC = () => {
     );
   }
 
+  const unreadCount = mergedNotifications.filter((n) => !n.read).length;
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -113,7 +181,7 @@ export const ProfilePrivacyView: React.FC = () => {
             Profile, Privacy &amp; Notifications
           </h1>
           <p className="text-sm text-slate-600 mt-1">
-            Signed in as {firebaseUser.email}
+            Signed in as {firebaseUser.email} · Citizen Account
           </p>
         </div>
         <button
@@ -222,19 +290,30 @@ export const ProfilePrivacyView: React.FC = () => {
         </form>
 
         <div className="lg:col-span-6 border border-slate-200 rounded-xl bg-white p-5 space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 font-display text-base font-semibold text-slate-900">
               <Bell className="w-5 h-5 text-green-900" />
-              Notifications ({notifications.filter((n) => !n.read).length} unread)
+              Notifications ({unreadCount} unread)
             </div>
-            <Lock className="w-4 h-4 text-slate-400" />
+            <div className="flex items-center gap-2">
+              {unreadCount > 0 && (
+                <button
+                  type="button"
+                  onClick={markAllRead}
+                  className="text-xs font-medium text-green-900 hover:underline"
+                >
+                  Mark all read
+                </button>
+              )}
+              <Lock className="w-4 h-4 text-slate-400" />
+            </div>
           </div>
 
-          {notifications.length === 0 ? (
+          {mergedNotifications.length === 0 ? (
             <p className="text-xs text-slate-500 py-8 text-center">No notifications yet.</p>
           ) : (
             <div className="divide-y divide-slate-200 max-h-72 overflow-y-auto">
-              {notifications.map((n) => (
+              {mergedNotifications.map((n) => (
                 <div key={n.id} className="py-3 flex items-start justify-between gap-3">
                   <div>
                     <div className={`text-sm ${n.read ? 'text-slate-700' : 'font-semibold text-slate-900'}`}>
