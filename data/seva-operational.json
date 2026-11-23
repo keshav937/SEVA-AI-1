@@ -1,0 +1,64 @@
+{
+  "slaConfig": {
+    "bySeverity": {
+      "Critical": {
+        "responseMinutes": 60,
+        "resolutionMinutes": 360
+      },
+      "High": {
+        "responseMinutes": 240,
+        "resolutionMinutes": 1440
+      },
+      "Medium": {
+        "responseMinutes": 720,
+        "resolutionMinutes": 2880
+      },
+      "Low": {
+        "responseMinutes": 1440,
+        "resolutionMinutes": 4320
+      }
+    },
+    "byCategoryOverride": {}
+  },
+  "idempotencyKeys": {},
+  "reports": [],
+  "sosEvents": [],
+  "medicalRequests": [],
+  "citizenComplaints": [],
+  "officers": [],
+  "caregivers": [],
+  "callLogs": [],
+  "notifications": [],
+  "smsLogs": [],
+  "auditLogs": [],
+  "trackingSessions": {
+    "trk_1795368390937_h9e1jk34": {
+      "shareToken": "trk_1795368390937_h9e1jk34",
+      "ownerUid": "dCH987JmhpMYe442xh7cXvlmwLe2",
+      "ownerDisplayName": "Keshav Gupta",
+      "status": "active",
+      "lat": 28.719685226697912,
+      "lng": 77.1276638248853,
+      "accuracyMeters": 35,
+      "address": "Sector 13, Rohini, Delhi, North West Delhi, Delhi, 110089, India",
+      "expiresAt": "2026-11-23T18:11:47.758Z",
+      "updatedAt": "2026-11-23T16:16:14.481Z",
+      "history": [
+        {
+          "lat": 28.7196826511258,
+          "lng": 77.12766133528504,
+          "accuracyMeters": 35,
+          "address": "Sector 13, Rohini, Delhi, North West Delhi, Delhi, 110089, India",
+          "timestamp": "2026-11-23T16:11:47.758Z"
+        },
+        {
+          "lat": 28.719685226697912,
+          "lng": 77.1276638248853,
+          "accuracyMeters": 35,
+          "address": "Sector 13, Rohini, Delhi, North West Delhi, Delhi, 110089, India",
+          "timestamp": "2026-11-23T16:16:14.481Z"
+        }
+      ]
+    }
+  }
+}

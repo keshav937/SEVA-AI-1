@@ -1002,6 +1002,68 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
     onSpeakText(summary);
   };
 
+  const awaitingApprovalReports = useMemo(
+    () => reports.filter((r) => r.status === 'Resolved – Awaiting Verification'),
+    [reports]
+  );
+
+  const approachingSlaReports = useMemo(() => {
+    const nowMs = Date.now();
+    return reports.filter((r) => {
+      if (['Verified Resolution', 'Rejected with reason', 'Resolved – Awaiting Verification'].includes(r.status)) return false;
+      if (!r.slaDeadlineAt) return false;
+      const deadlineMs = new Date(r.slaDeadlineAt).getTime();
+      const createdMs = r.createdAt ? new Date(r.createdAt).getTime() : deadlineMs;
+      const remaining = deadlineMs - nowMs;
+      const totalWin = Math.max(1000, deadlineMs - createdMs);
+      return remaining > 0 && remaining <= totalWin * 0.25;
+    });
+  }, [reports]);
+
+  const overdueReports = useMemo(() => {
+    const nowMs = Date.now();
+    return reports.filter(
+      (r) =>
+        !['Verified Resolution', 'Rejected with reason', 'Resolved – Awaiting Verification'].includes(r.status) &&
+        r.slaDeadlineAt &&
+        new Date(r.slaDeadlineAt).getTime() < nowMs
+    );
+  }, [reports]);
+
+  const actionQueueReports = useMemo(() => {
+    switch (actionQueue) {
+      case 'submitted':
+        return reports.filter((r) => r.status === 'Submitted');
+      case 'ai_pending':
+        return reports.filter(
+          (r) =>
+            r.status === 'AI Verification Pending' ||
+            r.verificationStatus === 'Flagged for Manual Review' ||
+            r.verificationStatus === 'Pending Verification'
+        );
+      case 'unassigned':
+        return reports.filter(
+          (r) => !r.assignedOfficer && !r.assignedOfficerUid && !['Verified Resolution', 'Rejected with reason'].includes(r.status)
+        );
+      case 'high_critical':
+        return reports.filter(
+          (r) => (r.severity === 'High' || r.severity === 'Critical') && !['Verified Resolution', 'Rejected with reason'].includes(r.status)
+        );
+      case 'approaching_sla':
+        return approachingSlaReports;
+      case 'overdue':
+        return overdueReports;
+      case 'escalated':
+        return reports.filter((r) => r.status === 'Escalated' || (r.escalations && r.escalations.length > 0));
+      case 'awaiting_verification':
+        return awaitingApprovalReports;
+      case 'reopened':
+        return reports.filter((r) => r.status === 'Reopened');
+      default:
+        return reports;
+    }
+  }, [actionQueue, approachingSlaReports, awaitingApprovalReports, overdueReports, reports]);
+
   // =========================================================================
   // ROLE-ISOLATED LOGIN GATE
   // =========================================================================
@@ -1216,23 +1278,6 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
     );
   }
 
-  const awaitingApprovalReports = reports.filter((r) => r.status === 'Resolved – Awaiting Verification');
-  const nowMs = Date.now();
-  const approachingSlaReports = reports.filter((r) => {
-    if (['Verified Resolution', 'Rejected with reason', 'Resolved – Awaiting Verification'].includes(r.status)) return false;
-    if (!r.slaDeadlineAt) return false;
-    const deadlineMs = new Date(r.slaDeadlineAt).getTime();
-    const createdMs = r.createdAt ? new Date(r.createdAt).getTime() : deadlineMs;
-    const remaining = deadlineMs - nowMs;
-    const totalWin = Math.max(1000, deadlineMs - createdMs);
-    return remaining > 0 && remaining <= totalWin * 0.25;
-  });
-  const overdueReports = reports.filter(
-    (r) =>
-      !['Verified Resolution', 'Rejected with reason', 'Resolved – Awaiting Verification'].includes(r.status) &&
-      r.slaDeadlineAt &&
-      new Date(r.slaDeadlineAt).getTime() < nowMs
-  );
   const unreadNotifs = authNotifications.filter((n) => !n.read).length;
 
   const MODULES: Array<{ id: AuthorityModule; label: string; badge?: number; icon: React.ReactNode }> = [
@@ -1277,40 +1322,6 @@ export const AuthorityDashboardView: React.FC<AuthorityDashboardViewProps> = ({
     if (opts?.queue) setActionQueue(opts.queue);
     setActiveModule(mod);
   };
-
-  const actionQueueReports = useMemo(() => {
-    switch (actionQueue) {
-      case 'submitted':
-        return reports.filter((r) => r.status === 'Submitted');
-      case 'ai_pending':
-        return reports.filter(
-          (r) =>
-            r.status === 'AI Verification Pending' ||
-            r.verificationStatus === 'Flagged for Manual Review' ||
-            r.verificationStatus === 'Pending Verification'
-        );
-      case 'unassigned':
-        return reports.filter(
-          (r) => !r.assignedOfficer && !r.assignedOfficerUid && !['Verified Resolution', 'Rejected with reason'].includes(r.status)
-        );
-      case 'high_critical':
-        return reports.filter(
-          (r) => (r.severity === 'High' || r.severity === 'Critical') && !['Verified Resolution', 'Rejected with reason'].includes(r.status)
-        );
-      case 'approaching_sla':
-        return approachingSlaReports;
-      case 'overdue':
-        return overdueReports;
-      case 'escalated':
-        return reports.filter((r) => r.status === 'Escalated' || (r.escalations && r.escalations.length > 0));
-      case 'awaiting_verification':
-        return awaitingApprovalReports;
-      case 'reopened':
-        return reports.filter((r) => r.status === 'Reopened');
-      default:
-        return reports;
-    }
-  }, [actionQueue, approachingSlaReports, awaitingApprovalReports, overdueReports, reports]);
 
   return (
     <div className="space-y-6">

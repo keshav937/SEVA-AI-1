@@ -84,6 +84,12 @@ export const ExploreCityView: React.FC = () => {
 
       setLoading(true);
       setFetchError(null);
+      let timedOut = false;
+      const timeoutId = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, 18000);
+
       try {
         const qs = new URLSearchParams({
           lat: String(lat),
@@ -95,21 +101,43 @@ export const ExploreCityView: React.FC = () => {
         const res = await fetch(`/api/places/nearby?${qs.toString()}`, {
           signal: controller.signal,
         });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          throw new Error(data.error || 'Failed to retrieve nearby places.');
+          const isTimeout = res.status === 504 || data?.code === 'NETWORK_TIMEOUT';
+          throw new Error(
+            data?.error ||
+              (isTimeout
+                ? 'Network timeout while searching nearby places. Click Retry to try again.'
+                : 'API fetch failed while retrieving nearby places. Click Retry to try again.')
+          );
         }
         const list: NearbyPlace[] = Array.isArray(data.places) ? data.places : [];
         const strictlyBounded = list
           .filter((p) => p.distanceMeters <= radiusMeters)
           .sort((a, b) => a.distanceMeters - b.distanceMeters);
         setPlaces(strictlyBounded);
-        setProviderName(data.provider || 'OpenStreetMap Overpass API');
+        setProviderName(data.provider || 'OpenStreetMap');
       } catch (err: any) {
-        if (err?.name === 'AbortError') return;
-        setFetchError(err?.message || 'Unable to query nearby places right now.');
+        if (err?.name === 'AbortError') {
+          if (!timedOut) return;
+          setPlaces([]);
+          setFetchError('Network timeout while searching nearby places. Check your connection and click Retry.');
+          return;
+        }
+        setPlaces([]);
+        const rawMsg = String(err?.message || '');
+        if (/failed to fetch|fetch failed|networkerror/i.test(rawMsg)) {
+          setFetchError(
+            navigator.onLine
+              ? 'Unable to reach the nearby places service right now (API fetch failed). Please click Retry.'
+              : 'Network connection is offline. Reconnect to the internet and click Retry.'
+          );
+        } else {
+          setFetchError(rawMsg || 'Unable to query nearby places right now. Please click Retry.');
+        }
       } finally {
-        if (!controller.signal.aborted) setLoading(false);
+        window.clearTimeout(timeoutId);
+        if (!controller.signal.aborted || timedOut) setLoading(false);
       }
     },
     [lat, lng, radiusMeters, selectedCategories]
@@ -136,7 +164,12 @@ export const ExploreCityView: React.FC = () => {
       setCustomRadiusError('Enter a custom radius between 0.2 and 50 km.');
       return;
     }
-    setRadiusMeters(Math.round(km * 1000));
+    const nextMeters = Math.round(km * 1000);
+    if (nextMeters === radiusMeters) {
+      loadPlaces(true);
+    } else {
+      setRadiusMeters(nextMeters);
+    }
   };
 
   const filteredPlaces = useMemo(() => {
@@ -385,25 +418,51 @@ export const ExploreCityView: React.FC = () => {
             </button>
           </div>
 
-          {fetchError && (
-            <div className="text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg p-3 flex items-center justify-between gap-2">
-              <span>{fetchError}</span>
-              <button type="button" onClick={() => loadPlaces(true)} className="font-semibold underline shrink-0">
-                Retry
-              </button>
-            </div>
-          )}
-
           {loading ? (
             <div className="border border-slate-200 rounded-xl p-8 flex flex-col items-center justify-center text-slate-600">
               <Loader2 className="w-6 h-6 animate-spin text-green-900 mb-2" />
-              <p className="text-sm">Querying OpenStreetMap Overpass within {formatRadiusLabel(radiusMeters)}...</p>
+              <p className="text-sm">Searching nearby places within {formatRadiusLabel(radiusMeters)}...</p>
+            </div>
+          ) : fetchError ? (
+            <div className="border border-red-200 bg-red-50 rounded-xl p-5 space-y-3 text-xs text-red-900">
+              <div className="flex items-start gap-2 font-semibold text-sm">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-700" />
+                <span>Unable to load nearby places</span>
+              </div>
+              <p className="leading-relaxed">{fetchError}</p>
+              <button
+                type="button"
+                onClick={() => loadPlaces(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-red-700 text-white text-xs font-semibold rounded-lg hover:bg-red-800"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Retry Search
+              </button>
+            </div>
+          ) : lat === null || lng === null ? (
+            <div className="border border-slate-200 rounded-xl p-8 text-center text-sm text-slate-600 bg-slate-50">
+              {gpsState === 'denied'
+                ? 'Location permission was denied. Allow location access or click a location on the map.'
+                : gpsState === 'timeout'
+                ? 'GPS signal timed out. Click Retry Location or select a point on the map.'
+                : gpsState === 'unavailable' || gpsState === 'offline'
+                ? 'Live GPS is currently unavailable. Click a point on the map or retry GPS detection.'
+                : 'Waiting for GPS coordinates.'}
+            </div>
+          ) : places.length === 0 ? (
+            <div className="border border-slate-200 rounded-xl p-8 text-center text-sm text-slate-600 bg-slate-50">
+              No matching places found within {formatRadiusLabel(radiusMeters)}. Try expanding the radius or selecting additional categories.
             </div>
           ) : filteredPlaces.length === 0 ? (
-            <div className="border border-slate-200 rounded-xl p-8 text-center text-sm text-slate-600 bg-slate-50">
-              {lat === null
-                ? 'Waiting for GPS coordinates.'
-                : `No matching places found within ${formatRadiusLabel(radiusMeters)}. Try expanding the radius or selecting additional categories.`}
+            <div className="border border-slate-200 rounded-xl p-6 text-center text-sm text-slate-600 bg-slate-50 space-y-2">
+              <p>No retrieved places match &ldquo;{searchText}&rdquo;.</p>
+              <button
+                type="button"
+                onClick={() => setSearchText('')}
+                className="text-xs font-semibold text-green-900 underline"
+              >
+                Clear search filter
+              </button>
             </div>
           ) : (
             <div className="space-y-2.5 max-h-[410px] overflow-y-auto pr-1">

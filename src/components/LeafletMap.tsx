@@ -220,7 +220,19 @@ export const LeafletMap: React.FC<LeafletMapProps> = ({
         marker.openPopup();
       }
     }
-  }, [userLat, userLng, userAccuracyMeters, searchRadiusMeters, markers, heatmapCircles, polylinePoints, selectedMarkerId]);
+  }, [
+    userLat,
+    userLng,
+    userAccuracyMeters,
+    searchRadiusMeters,
+    primaryRadiusColor,
+    secondaryRadiusMeters,
+    secondaryRadiusColor,
+    markers,
+    heatmapCircles,
+    polylinePoints,
+    selectedMarkerId,
+  ]);
 
   return (
     <div

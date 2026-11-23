@@ -202,6 +202,12 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
 
       setHospitalsLoading(true);
       setHospitalsError(null);
+      let timedOut = false;
+      const timeoutId = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, 18000);
+
       try {
         const qs = new URLSearchParams({
           lat: String(lat),
@@ -214,19 +220,43 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
         const res = await fetch(`/api/places/nearby?${qs.toString()}`, {
           signal: controller.signal,
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Unable to load nearby hospitals and medical facilities.');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const isTimeout = res.status === 504 || data?.code === 'NETWORK_TIMEOUT';
+          throw new Error(
+            data?.error ||
+              (isTimeout
+                ? 'Network timeout while searching hospitals and medical facilities. Please retry.'
+                : 'API fetch failed while loading nearby hospitals and medical facilities.')
+          );
+        }
         const list: NearbyPlace[] = Array.isArray(data.places) ? data.places : [];
         const strictlyBounded = list
           .filter((p) => p.distanceMeters <= hospitalRadiusMeters)
           .sort((a, b) => a.distanceMeters - b.distanceMeters);
         setHospitals(strictlyBounded);
-        setHospitalsProvider(data.provider || 'OpenStreetMap Overpass API');
+        setHospitalsProvider(data.provider || 'OpenStreetMap');
       } catch (err: any) {
-        if (err?.name === 'AbortError') return;
-        setHospitalsError(err?.message || 'Unable to query nearby hospitals right now.');
+        if (err?.name === 'AbortError') {
+          if (!timedOut) return;
+          setHospitals([]);
+          setHospitalsError('Network timeout while searching nearby hospitals. Please click Retry.');
+          return;
+        }
+        setHospitals([]);
+        const rawMsg = String(err?.message || '');
+        if (/failed to fetch|fetch failed|networkerror/i.test(rawMsg)) {
+          setHospitalsError(
+            navigator.onLine
+              ? 'Unable to reach the hospitals lookup service right now (API fetch failed). Please click Retry.'
+              : 'Network connection is offline. Reconnect and click Retry.'
+          );
+        } else {
+          setHospitalsError(rawMsg || 'Unable to query nearby hospitals right now.');
+        }
       } finally {
-        if (!controller.signal.aborted) setHospitalsLoading(false);
+        window.clearTimeout(timeoutId);
+        if (!controller.signal.aborted || timedOut) setHospitalsLoading(false);
       }
     },
     [lat, lng, hospitalRadiusMeters]
@@ -242,6 +272,12 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
 
       setPoliceLoading(true);
       setPoliceError(null);
+      let timedOut = false;
+      const timeoutId = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, 18000);
+
       try {
         const qs = new URLSearchParams({
           lat: String(lat),
@@ -254,19 +290,43 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
         const res = await fetch(`/api/places/nearby?${qs.toString()}`, {
           signal: controller.signal,
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Unable to load nearby police stations.');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const isTimeout = res.status === 504 || data?.code === 'NETWORK_TIMEOUT';
+          throw new Error(
+            data?.error ||
+              (isTimeout
+                ? 'Network timeout while searching nearby police stations. Please retry.'
+                : 'API fetch failed while loading nearby police stations.')
+          );
+        }
         const list: NearbyPlace[] = Array.isArray(data.places) ? data.places : [];
         const strictlyBounded = list
           .filter((p) => p.distanceMeters <= policeRadiusMeters)
           .sort((a, b) => a.distanceMeters - b.distanceMeters);
         setPoliceStations(strictlyBounded);
-        setPoliceProvider(data.provider || 'OpenStreetMap Overpass API');
+        setPoliceProvider(data.provider || 'OpenStreetMap');
       } catch (err: any) {
-        if (err?.name === 'AbortError') return;
-        setPoliceError(err?.message || 'Unable to query nearby police stations right now.');
+        if (err?.name === 'AbortError') {
+          if (!timedOut) return;
+          setPoliceStations([]);
+          setPoliceError('Network timeout while searching nearby police stations. Please click Retry.');
+          return;
+        }
+        setPoliceStations([]);
+        const rawMsg = String(err?.message || '');
+        if (/failed to fetch|fetch failed|networkerror/i.test(rawMsg)) {
+          setPoliceError(
+            navigator.onLine
+              ? 'Unable to reach the police station lookup service right now (API fetch failed). Please click Retry.'
+              : 'Network connection is offline. Reconnect and click Retry.'
+          );
+        } else {
+          setPoliceError(rawMsg || 'Unable to query nearby police stations right now.');
+        }
       } finally {
-        if (!controller.signal.aborted) setPoliceLoading(false);
+        window.clearTimeout(timeoutId);
+        if (!controller.signal.aborted || timedOut) setPoliceLoading(false);
       }
     },
     [lat, lng, policeRadiusMeters]
@@ -298,7 +358,12 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
       setHospitalCustomError('Enter a radius between 0.2 and 50 km.');
       return;
     }
-    setHospitalRadiusMeters(Math.round(km * 1000));
+    const nextMeters = Math.round(km * 1000);
+    if (nextMeters === hospitalRadiusMeters) {
+      fetchNearbyHospitals(true);
+    } else {
+      setHospitalRadiusMeters(nextMeters);
+    }
   };
 
   const applyPoliceCustomRadius = (e: React.FormEvent) => {
@@ -309,7 +374,12 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
       setPoliceCustomError('Enter a radius between 0.2 and 50 km.');
       return;
     }
-    setPoliceRadiusMeters(Math.round(km * 1000));
+    const nextMeters = Math.round(km * 1000);
+    if (nextMeters === policeRadiusMeters) {
+      fetchNearbyPolice(true);
+    } else {
+      setPoliceRadiusMeters(nextMeters);
+    }
   };
 
   const handleManualAddressSearch = async (e: React.FormEvent) => {
@@ -918,16 +988,26 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
                   {hospitalCustomError && <div className="text-[11px] text-red-700">{hospitalCustomError}</div>}
                 </div>
 
-                {hospitalsError && (
-                  <div className="text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg p-2.5">
-                    {hospitalsError}
-                  </div>
-                )}
-
                 {hospitalsLoading ? (
                   <div className="py-8 text-center text-xs text-slate-600 flex flex-col items-center">
                     <Loader2 className="w-5 h-5 animate-spin text-red-700 mb-2" />
                     Searching hospitals, clinics &amp; medical centres within {formatRadiusLabel(hospitalRadiusMeters)}...
+                  </div>
+                ) : hospitalsError ? (
+                  <div className="text-xs text-red-900 bg-red-50 border border-red-200 rounded-lg p-3 space-y-2">
+                    <div className="flex items-start gap-2 font-semibold">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-700" />
+                      <span>Hospital search failed</span>
+                    </div>
+                    <p>{hospitalsError}</p>
+                    <button
+                      type="button"
+                      onClick={() => fetchNearbyHospitals(true)}
+                      className="inline-flex items-center gap-1 px-3 py-1.5 bg-red-700 text-white text-[11px] font-semibold rounded hover:bg-red-800"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      Retry Hospitals
+                    </button>
                   </div>
                 ) : hospitals.length === 0 ? (
                   <p className="text-xs text-slate-500 bg-white border border-slate-200 rounded-lg p-3">
@@ -1058,16 +1138,26 @@ export const MedicalAssistanceView: React.FC<MedicalAssistanceViewProps> = ({ on
                   {policeCustomError && <div className="text-[11px] text-red-700">{policeCustomError}</div>}
                 </div>
 
-                {policeError && (
-                  <div className="text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg p-2.5">
-                    {policeError}
-                  </div>
-                )}
-
                 {policeLoading ? (
                   <div className="py-8 text-center text-xs text-slate-600 flex flex-col items-center">
                     <Loader2 className="w-5 h-5 animate-spin text-blue-700 mb-2" />
                     Searching police stations within {formatRadiusLabel(policeRadiusMeters)}...
+                  </div>
+                ) : policeError ? (
+                  <div className="text-xs text-red-900 bg-red-50 border border-red-200 rounded-lg p-3 space-y-2">
+                    <div className="flex items-start gap-2 font-semibold">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-700" />
+                      <span>Police station search failed</span>
+                    </div>
+                    <p>{policeError}</p>
+                    <button
+                      type="button"
+                      onClick={() => fetchNearbyPolice(true)}
+                      className="inline-flex items-center gap-1 px-3 py-1.5 bg-red-700 text-white text-[11px] font-semibold rounded hover:bg-red-800"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      Retry Police Stations
+                    </button>
                   </div>
                 ) : policeStations.length === 0 ? (
                   <p className="text-xs text-slate-500 bg-white border border-slate-200 rounded-lg p-3">

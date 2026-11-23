@@ -28,6 +28,7 @@ import {
   geocodeLocationQuery,
   NearbyCategoryKey,
   NearbySearchMode,
+  PlacesProviderError,
   reverseGeocode,
 } from './server/places.ts';
 import {
@@ -798,8 +799,11 @@ async function startServer() {
       });
       return res.json(data);
     } catch (err: any) {
-      return res.status(502).json({
-        error: err?.message || 'Unable to retrieve nearby places from OpenStreetMap Overpass API.',
+      const statusCode = err instanceof PlacesProviderError ? err.httpStatus : 502;
+      const code = err instanceof PlacesProviderError ? err.code : 'UPSTREAM_FETCH_FAILED';
+      return res.status(statusCode).json({
+        error: err?.message || 'Unable to retrieve nearby places from OpenStreetMap services.',
+        code,
       });
     }
   });
